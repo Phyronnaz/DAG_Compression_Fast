@@ -190,10 +190,6 @@ int main()
 		FVoxelizer Voxelizer(1 << LEVELS, Scene);
 		
 		auto Data = Voxelizer.GenerateFragments(AABB, 1 << LEVELS);
-		LOG("%llu", Data.Positions[0]);
-		LOG("%llu", Data.Positions[1]);
-		LOG("%llu", Data.Positions[2]);
-		LOG("%llu", Data.Positions[3]);
 	}
 	
 	

@@ -286,6 +286,7 @@ FVoxelizer::FResult FVoxelizer::GenerateFragments(const FAABB& AABB, const int G
 		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 	}
 	glUseProgram(0);
+	checkInf(FragCount, TexDim);
 	return FResult{ Positions, FragCount };
 }
 
