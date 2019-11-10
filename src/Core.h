@@ -3,6 +3,7 @@
 #define ENABLE_CHECKS 1
 #define ENABLE_FORCEINLINE 0
 #define ENABLE_FLATTEN 0
+#define LEVELS 12
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -17,7 +18,6 @@
 #endif
 #define ASSUME(expr) check(expr); __assume(expr);
 
-#pragma warning(disable : 4100 4127 4201 4389 4514 4571 4623 4625 4626 4623 4668 4710 4711 4774 4820 5026 5027 5039 5045 )
 #define _CRT_SECURE_NO_WARNINGS
 
 #else
@@ -92,17 +92,11 @@ TmpIntVector threadIdx;
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#if defined(__CUDA_ARCH__)
-#define error_printf(...) printf(__VA_ARGS__)
-#else
-#define error_printf(...) std::fprintf(stderr, __VA_ARGS__)
-#endif
-
 #if ENABLE_CHECKS
-#define checkf(expr, msg, ...) if(!(expr)) { error_printf("Assertion failed " __FILE__ ":%d: %s: " msg "\n",__LINE__,#expr,##__VA_ARGS__); DEBUG_BREAK(); }
-#define check(expr) if(!(expr)) { error_printf("Assertion failed " __FILE__ ":%d: %s:\n",__LINE__,#expr); DEBUG_BREAK(); }
+#define checkf(expr, msg, ...) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s: " msg "\n", __LINE__, #expr, ##__VA_ARGS__); DEBUG_BREAK(); }
+#define check(expr) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s:\n", __LINE__, #expr); DEBUG_BREAK(); }
 #define checkAlways(expr) check(expr)
-#define checkfAlways(expr, msg, ...) checkf(expr, msg,##__VA_ARGS__)
+#define checkfAlways(expr, msg, ...) checkf(expr,msg,##__VA_ARGS__)
 
 #define checkEqual(a, b) checkf((a) == (b), "As uint64: a = %" PRIu64 "; b = %" PRIu64, uint64(a), uint64(b))
 #define checkInf(a, b) checkf((a) < (b), "As uint64: a = %" PRIu64 "; b = %" PRIu64, uint64(a), uint64(b))
@@ -110,8 +104,8 @@ TmpIntVector threadIdx;
 #else
 #define checkf(expr, msg, ...)
 #define check(...)
-#define checkAlways(expr) if(!(expr)) { error_printf("Assertion failed " __FILE__ ":%d: %s\n", __LINE__, #expr); DEBUG_BREAK(); std::abort(); }
-#define checkfAlways(expr, msg, ...) if(!(expr)) { error_printf("Assertion failed " __FILE__ ":%d: %s: " msg "\n", __LINE__, #expr,##__VA_ARGS__); DEBUG_BREAK(); std::abort(); }
+#define checkAlways(expr) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s\n", __LINE__, #expr); DEBUG_BREAK(); std::abort(); }
+#define checkfAlways(expr, msg, ...) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s: " msg "\n", __LINE__, #expr,##__VA_ARGS__); DEBUG_BREAK(); std::abort(); }
 #define checkEqual(a, b)
 #define checkInf(a, b)
 #define checkInfEqual(a, b)
