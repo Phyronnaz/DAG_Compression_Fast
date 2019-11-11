@@ -10,7 +10,7 @@ class FVoxelizer
 public:
 	const int32 GridSize;
 	const FScene& Scene;
-	static constexpr int32 TexDim = 64 * 1024 * 1024;
+	static constexpr int32 TexDim = 128 * 1024 * 1024;
 
 private:
 	const std::vector<std::size_t> NodesToRender;

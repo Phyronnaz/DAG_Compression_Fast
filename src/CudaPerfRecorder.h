@@ -42,3 +42,24 @@ private:
 	cudaEvent_t BeginEvent = nullptr;
 	cudaEvent_t EndEvent = nullptr;
 };
+
+class FCudaScopePerfRecorder
+{
+public:
+	FCudaScopePerfRecorder(const char* Name, uint64 NumElements)
+		: Name(Name)
+		, NumElements(NumElements)
+	{
+		PerfRecorder.Start();
+	}
+	~FCudaScopePerfRecorder()
+	{
+		const auto Elapsed = PerfRecorder.End();
+		LOG("%s: Processing %llu elements took %fs: %f B/s", Name, NumElements, Elapsed, NumElements / Elapsed / 1e9);
+	}
+
+private:
+	const char* const Name;
+	const uint64 NumElements;
+	FCudaPerfRecorder PerfRecorder;
+};

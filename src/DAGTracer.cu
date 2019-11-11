@@ -1,5 +1,7 @@
 #include "DAGTracer.h"
 
+#pragma warning (disable: 4244)
+
 #define IN_ORDER_TRAVERSAL 1
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -18,7 +20,6 @@ HOST_DEVICE uint8 GetNextChild(uint8_t ChildOrder, uint8_t TestMask, uint8_t Chi
 		const bool ChildIsTaken = (~TestMask & (1 << ChildInOrder)) != 0;
 		if (ChildExists && !ChildIsTaken) return ChildInOrder;
 	}
-	check(false);
 	return 0;
 };
 

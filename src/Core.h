@@ -1,9 +1,10 @@
 #pragma once
 
 #define ENABLE_CHECKS 1
+#define DEBUG_GPU_ARRAYS 1
 #define ENABLE_FORCEINLINE 0
 #define ENABLE_FLATTEN 0
-#define LEVELS 12
+#define LEVELS 11
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -94,7 +95,7 @@ TmpIntVector threadIdx;
 
 #if ENABLE_CHECKS
 #define checkf(expr, msg, ...) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s: " msg "\n", __LINE__, #expr, ##__VA_ARGS__); DEBUG_BREAK(); }
-#define check(expr) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s:\n", __LINE__, #expr); DEBUG_BREAK(); }
+#define check(expr) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s\n", __LINE__, #expr); DEBUG_BREAK(); }
 #define checkAlways(expr) check(expr)
 #define checkfAlways(expr, msg, ...) checkf(expr,msg,##__VA_ARGS__)
 
@@ -112,6 +113,9 @@ TmpIntVector threadIdx;
 #endif
 
 #define LOG(msg, ...) printf(msg "\n",##__VA_ARGS__)
+
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
 
 #if ENABLE_FORCEINLINE
 #ifdef _MSC_VER
@@ -142,6 +146,8 @@ TmpIntVector threadIdx;
 #define HOST_DEVICE           __host__ __device__ inline FORCEINLINE FLATTEN
 #define HOST_DEVICE_RECURSIVE __host__ __device__ inline
 
+#define GPU_LAMBDA __host__ __device__
+
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -149,7 +155,7 @@ TmpIntVector threadIdx;
 #define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
 #define CUDA_CHECK_ERROR() \
 	{ \
-		cudaDeviceSynchronize(); \
+		CUDA_CHECKED_CALL cudaDeviceSynchronize(); \
 		CUDA_CHECKED_CALL cudaGetLastError(); \
 	}
 
@@ -189,4 +195,18 @@ namespace detail
 			return Error;
 		}
 	};
+}
+
+#include <limits>
+
+template<typename T, typename U>
+HOST_DEVICE T Cast(U Value)
+{
+	static_assert(std::numeric_limits<T>::max() <= std::numeric_limits<int64>::max(), "invalid cast");
+	checkf(
+		int64(std::numeric_limits<T>::min()) <= int64(Value) && int64(Value) <= int64(std::numeric_limits<T>::max()),
+		"overflow: %" PRIi64 " not in [%" PRIi64 ", %" PRIi64 "]",
+		int64(Value),
+		int64(std::numeric_limits<T>::min()), int64(std::numeric_limits<T>::max()));
+	return static_cast<T>(Value);
 }

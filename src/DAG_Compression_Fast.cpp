@@ -7,6 +7,7 @@
 #include "GLTFLoader.h"
 #include "DAGTracer.h"
 #include "Voxelizer.h"
+#include "DAGCompression.h"
 
 SDL_Window* mainWindow;
 SDL_GLContext mainContext;
@@ -188,8 +189,13 @@ int main()
 		AABB = Scene.AABB;
 
 		FVoxelizer Voxelizer(1 << LEVELS, Scene);
-		
+
 		auto Data = Voxelizer.GenerateFragments(AABB, 1 << LEVELS);
+		LOG("%llu fragments", Data.Count);
+		LOG("Depth = %d", LEVELS);
+		FMemory::RegisterCustomAlloc(Data.Positions, "Fragments", Data.Count * sizeof(uint64), EMemoryType::GPU);
+		TStaticArray<uint64, EMemoryType::GPU> Fragments(Data.Positions, Data.Count);
+		Dag = DAGCompression::CreateDAG(Fragments, LEVELS);
 	}
 	
 	

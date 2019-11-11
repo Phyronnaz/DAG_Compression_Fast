@@ -943,6 +943,9 @@
     <ClInclude Include="src\CudaGLBuffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\DAGCompression.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="src\glm\detail\func_common.inl">
@@ -1342,5 +1345,9 @@
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="src\DAGTracer.cu" />
+    <CudaCompile Include="src\DAGCompression.cu" />
+  </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="src\Array.natvis" />
   </ItemGroup>
 </Project>

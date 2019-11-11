@@ -13,6 +13,9 @@ public:
 		: ArrayData(Data)
 		, ArraySize(Size)
 	{
+		const auto Info = FMemory::GetAllocInfo(Data);
+		checkAlways(Info.Size == sizeof(TElementType) * Size);
+		checkAlways(Info.Type == MemoryType);
 	}
 	TStaticArray(const char* Name, TSize Size)
 		: ArrayData(FMemory::Malloc<TElementType>(Name, Size * sizeof(TElementType), MemoryType))
@@ -28,8 +31,16 @@ public:
 	{
 		static_assert(MemoryType == EMemoryType::CPU, "");
 	    check(IsValid());
-        auto Result = TStaticArray<TElementType, EMemoryType::GPU, TSize>(FMemory::GetAllocName(GetData()), Num());
+        auto Result = TStaticArray<TElementType, EMemoryType::GPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
         CopyToGPU(Result);
+        return Result;
+    }
+	HOST TStaticArray<TElementType, EMemoryType::CPU, TSize> CreateCPU() const
+	{
+		static_assert(MemoryType == EMemoryType::GPU, "");
+	    check(IsValid());
+        auto Result = TStaticArray<TElementType, EMemoryType::CPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
+        CopyToCPU(Result);
         return Result;
     }
 
@@ -38,6 +49,12 @@ public:
 		static_assert(MemoryType == EMemoryType::CPU, "");
         check(GpuArray.Num() == Num());
         CUDA_CHECKED_CALL cudaMemcpy(GpuArray.GetData(), GetData(), Num() * sizeof(TElementType), cudaMemcpyHostToDevice);
+    }
+    HOST void CopyToCPU(TStaticArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
+    {
+		static_assert(MemoryType == EMemoryType::GPU, "");
+        check(CpuArray.Num() == Num());
+        CUDA_CHECKED_CALL cudaMemcpy(CpuArray.GetData(), GetData(), Num() * sizeof(TElementType), cudaMemcpyDeviceToHost);
     }
 
     HOST void Free()
@@ -142,13 +159,18 @@ public:
 		, AllocatedSize(Array.Num())
 	{
 	}
+	TDynamicArray(const char* Name, TSize Size)
+		: TStaticArray<TElementType, MemoryType, TSize>(Name, Size)
+		, AllocatedSize(Size)
+	{
+	}
 
     HOST void CopyToGPU(TDynamicArray<TElementType, EMemoryType::GPU, TSize>& GPUArray) const
     {
 		static_assert(MemoryType == EMemoryType::CPU, "");
         if (!GPUArray.is_valid())
         {
-            GPUArray = this->Allocate(FMemory::GetAllocName(this->GetData()), this->GetAllocatedSize(), EMemoryType::GPU);;
+            GPUArray = this->Allocate(FMemory::GetAllocInfo(this->GetData()).Name, this->GetAllocatedSize(), EMemoryType::GPU);
         }
         if (GPUArray.GetAllocatedSize() < this->size())
         {
@@ -194,21 +216,44 @@ public:
 		return Add(TElementType{ std::forward<TArgs>(Args)... });
 	}
 	
-	HOST void Reserve(TSize Amount)
+	HOST void Resize(TSize NewSize)
 	{
-		check(this->ArrayData);
-		AllocatedSize += Amount;
-		FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType));
+		checkInfEqual(this->ArraySize, AllocatedSize);
+		check(this->ArrayData); // For the name
+		this->ArraySize = NewSize;
+		if (AllocatedSize < this->ArraySize)
+		{
+			AllocatedSize = this->ArraySize;
+			FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType));
+		}
+		checkInfEqual(this->ArraySize, AllocatedSize);
+	}
+	HOST void ResizeUninitialized(TSize NewSize)
+	{
+		checkInfEqual(this->ArraySize, AllocatedSize);
+		check(this->ArrayData); // For the name
+		this->ArraySize = NewSize;
+		if (AllocatedSize < this->ArraySize)
+		{
+			AllocatedSize = this->ArraySize;
+			FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType), false);
+		}
+		checkInfEqual(this->ArraySize, AllocatedSize);
 	}
 	
 	HOST void Shrink()
 	{
 		check(this->ArrayData);
 		check(this->ArraySize != 0);
-		AllocatedSize = this->ArraySize;
-		FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType));
+		checkInfEqual(this->ArraySize, AllocatedSize);
+		if (AllocatedSize != this->ArraySize)
+		{
+			AllocatedSize = this->ArraySize;
+			FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType));
+		}
+		checkInfEqual(this->ArraySize, AllocatedSize);
 	}
-	
+
 protected:
 	TSize AllocatedSize = 0;
 };

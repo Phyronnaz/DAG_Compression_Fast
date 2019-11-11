@@ -13,12 +13,19 @@ enum class EMemoryType
 class FMemory
 {
 public:
+    struct Element
+    {
+        const char* Name = nullptr;
+        uint64 Size = uint64(-1);
+        EMemoryType Type = EMemoryType::CPU;
+    };
+
     template<typename T>
     static T* Malloc(const char* Name, uint64 Size, EMemoryType Type)
     {
         checkAlways(Size % sizeof(T) == 0);
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
-        return reinterpret_cast<T*>(Singleton.MallocImpl(Size, Name, Type));
+        return reinterpret_cast<T*>(Singleton.MallocImpl(Name, Size, Type));
     }
     template<typename T>
     static void Free(T* Ptr)
@@ -27,18 +34,26 @@ public:
         Singleton.FreeImpl(reinterpret_cast<void*>(Ptr));
     }
     template<typename T>
-    static void Realloc(T*& Ptr, uint64 NewSize)
+    static void Realloc(T*& Ptr, uint64 NewSize, bool bCopyData = true)
     {
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 		void* Copy = reinterpret_cast<void*>(Ptr);
-        Singleton.ReallocImpl(Copy, NewSize);
+        Singleton.ReallocImpl(Copy, NewSize, bCopyData);
 		Ptr = reinterpret_cast<T*>(Copy);
     }
     template<typename T>
-    static const char* GetAllocName(const T* Ptr)
+    static void RegisterCustomAlloc(T* Ptr, const char* Name, uint64 Size, EMemoryType Type)
+    {
+        checkAlways(Size % sizeof(T) == 0);
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		void* Copy = reinterpret_cast<void*>(Ptr);
+        Singleton.RegisterCustomAllocImpl(Copy, Name, Size, Type);
+    }
+    template<typename T>
+    static Element GetAllocInfo(const T* Ptr)
     {
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
-        return Singleton.GetAllocNameImpl(reinterpret_cast<void*>(const_cast<T*>(Ptr)));
+        return Singleton.GetAllocInfoImpl(reinterpret_cast<void*>(const_cast<T*>(Ptr)));
     }
     static std::string GetStatsString()
     {
@@ -60,18 +75,12 @@ private:
     FMemory() = default;
     ~FMemory();
 
-    void* MallocImpl(uint64 Size, const char* Name, EMemoryType Type);
+    void* MallocImpl(const char* Name, uint64 Size, EMemoryType Type);
     void FreeImpl(void* Ptr);
-	void ReallocImpl(void*& Ptr, uint64 NewSize);
-	const char* GetAllocNameImpl(void* Ptr) const;
+	void ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData);
+	void RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, EMemoryType Type);
+	Element GetAllocInfoImpl(void* Ptr) const;
     std::string GetStatsStringImpl() const;
-
-    struct Element
-    {
-        const char* Name = nullptr;
-        EMemoryType Type = EMemoryType::CPU;
-        uint64 Size = uint64(-1);
-    };
 
     std::mutex Mutex;
     size_t TotalAllocatedGpuMemory = 0;
@@ -80,3 +89,33 @@ private:
 
     static FMemory Singleton;
 };
+
+template<typename T>
+class TGPUSingleElementAlloc
+{
+public:
+	TGPUSingleElementAlloc(const char* Name)
+		: Ptr(FMemory::Malloc<T>(Name, sizeof(T), EMemoryType::GPU))
+	{
+	}
+	~TGPUSingleElementAlloc()
+	{
+		FMemory::Free(Ptr);
+	}
+
+	inline T* ToGPU() const
+	{
+		return Ptr;
+	}
+	inline T ToCPU() const
+	{
+		T CPU;
+		CUDA_CHECKED_CALL cudaMemcpy(&CPU, Ptr, sizeof(T), cudaMemcpyDeviceToHost);
+		return CPU;
+	}
+
+private:
+	T* const Ptr;
+};
+
+#define SINGLE_GPU_ELEMENT(Type, Name) const TGPUSingleElementAlloc<Type> Name(__FILE__ ":" STR(__LINE__))
