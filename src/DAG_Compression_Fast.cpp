@@ -235,23 +235,42 @@ int main()
 #if 1
 	{
 		ZoneScopedN("Main");
-		
+
+		const double LoadSceneStartTime = Utils::Seconds();
 		FGLTFLoader Loader("GLTF/Sponza/glTF/", "Sponza.gltf");
 		const auto Scene = Loader.GetScene();
+		LOG("Loading Scene took %fs", Utils::Seconds() - LoadSceneStartTime);
 		AABB = MakeSquareAABB(Scene.AABB);
 
-		FVoxelizer Voxelizer(1 << LEVELS, Scene);
+		LOG("Depth = %d (%d)", LEVELS, 1 << LEVELS);
+
+		const int32 NumberOfSplits = LEVELS - SUBDAG_LEVELS;
+		std::vector<FAABB> AABBs = { AABB };
+		for (int32 Index = 0; Index < NumberOfSplits; Index++) AABBs = SplitAABB(AABBs);
+		check(AABBs.size() == 1 << (3 * NumberOfSplits))
+
+			FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
+
+		double TotalGenerateFragmentsTime = 0;
+		double TotalCreateDAGTime = 0;
+
+		for (auto& LocalAABB : AABBs)
+		{
+			const double GenerateFragmentsStartTime = Utils::Seconds();
+			const auto Fragments = Voxelizer.GenerateFragments(AABB);
+			const double GenerateFragmentsElapsed = Utils::Seconds() - GenerateFragmentsStartTime;
+			TotalGenerateFragmentsTime += GenerateFragmentsElapsed;
+			LOG("GenerateFragments took %fs", GenerateFragmentsElapsed);
+
+			LOG("%llu fragments", Fragments.Num());
+
+			const double CreateDAGStartTime = Utils::Seconds();
+			Dag = DAGCompression::CreateDAG(Fragments, SUBDAG_LEVELS);
+			const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
+			TotalCreateDAGTime += CreateDAGElapsed;
+			LOG("CreateDAG took %fs", CreateDAGElapsed);
+		}
 		
-		const double GenerateFragmentsStartTime = Utils::Seconds();
-		const auto Fragments = Voxelizer.GenerateFragments(AABB, 1 << LEVELS);
-		LOG("GenerateFragments took %fs", Utils::Seconds() - GenerateFragmentsStartTime);
-
-		LOG("%llu fragments", Fragments.Num());
-		LOG("Depth = %d", LEVELS);
-
-		const double CreateDAGStartTime = Utils::Seconds();
-		Dag = DAGCompression::CreateDAG(Fragments, LEVELS);
-		LOG("CreateDAG took %fs", Utils::Seconds() - CreateDAGStartTime);
 		LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
 		
 		FreeScene(Scene);

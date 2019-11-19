@@ -347,6 +347,8 @@ FGLTFLoader::FGLTFLoader(const std::string& Path, const std::string& Filename)
 	: Path(Path)
 {
 	ZoneScoped;
+
+	LOG("Loading %s%s", Path.c_str(), Filename.c_str());
 	
 	std::ifstream File(Path + Filename);
 	checkAlways(File.is_open());

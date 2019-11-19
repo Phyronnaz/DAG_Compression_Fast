@@ -641,7 +641,7 @@
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <CodeGeneration>compute_61,sm_61</CodeGeneration>
       <Warning>InheritFromHost</Warning>
-      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706 /wd4324 /wd4515 /wd4127" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706 /wd4324 /wd4515 /wd4127 /wd4714" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -691,7 +691,7 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <CodeGeneration>compute_61,sm_61</CodeGeneration>
-      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706 /wd4324 /wd4515 /wd4127" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706 /wd4324 /wd4515 /wd4127 /wd4714" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -33,10 +33,10 @@
     <ClCompile Include="src\GLTFLoader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="src\DAG_Compression_Fast.cpp" />
     <ClCompile Include="src\tracy\TracyClient.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\DAG_Compression_Fast.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Core.h">

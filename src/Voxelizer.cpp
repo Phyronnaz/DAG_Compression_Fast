@@ -187,14 +187,14 @@ std::vector<std::size_t> GetNodesToRender(const FScene& Scene)
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-FVoxelizer::FVoxelizer(int32 GridSize, const FScene& Scene)
-	: GridSize(GridSize)
+FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
+	: SubGridSize(SubGridSize)
 	, Scene(Scene)
 	, NodesToRender(GetNodesToRender(Scene))
 {
 	ZoneScoped;
 	
-	check(GridSize > 0);
+	check(SubGridSize > 0);
 	const GLuint VertexShader = CompileShader(GL_VERTEX_SHADER, GetFileContents("Shaders/VertexShader.glsl").c_str());
 	const GLuint FragmentShader = CompileShader(GL_FRAGMENT_SHADER, GetFileContents("Shaders/FragmentShader.glsl").c_str());
 	const GLuint GeometryShader = CompileShader(GL_GEOMETRY_SHADER, GetFileContents("Shaders/GeometryShader.glsl").c_str());
@@ -217,8 +217,8 @@ FVoxelizer::FVoxelizer(int32 GridSize, const FScene& Scene)
 
 	// Dummy framebuffer.
 	glGenFramebuffers(1, &DummyFBO);
-	glNamedFramebufferParameteri(DummyFBO, GL_FRAMEBUFFER_DEFAULT_WIDTH, GridSize);
-	glNamedFramebufferParameteri(DummyFBO, GL_FRAMEBUFFER_DEFAULT_HEIGHT, GridSize);
+	glNamedFramebufferParameteri(DummyFBO, GL_FRAMEBUFFER_DEFAULT_WIDTH, SubGridSize);
+	glNamedFramebufferParameteri(DummyFBO, GL_FRAMEBUFFER_DEFAULT_HEIGHT, SubGridSize);
 	glBindFramebuffer(GL_FRAMEBUFFER, DummyFBO);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -243,7 +243,7 @@ FVoxelizer::~FVoxelizer()
 	FMemory::UnregisterCustomAlloc(Positions);
 }
 
-TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB, const int GridResolution) const
+TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 {
 	ZoneScoped;
 	
@@ -266,7 +266,7 @@ TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB
 		glUniformMatrix4fv(Location, 1, false, value_ptr(GetProjectionViewMatrix(ViewZ)));
 
 		Location = glGetUniformLocation(VoxelizeShader, "grid_dim");
-		glUniform1i(Location, GridResolution);
+		glUniform1i(Location, SubGridSize);
 		Location = glGetUniformLocation(VoxelizeShader, "aabb_size");
 		glUniform3fv(Location, 1, value_ptr(AABB.GetHalfSize()));
 
@@ -275,7 +275,7 @@ TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB
 
 		glBindFramebuffer(GL_FRAMEBUFFER, DummyFBO);
 		{
-			glViewport(0, 0, GridResolution, GridResolution);
+			glViewport(0, 0, SubGridSize, SubGridSize);
 			glDisable(GL_CULL_FACE);
 			glDisable(GL_DEPTH_TEST);
 			glDisable(GL_MULTISAMPLE);
@@ -297,7 +297,7 @@ TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB
 		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 	}
 	glUseProgram(0);
-	checkInf(FragCount, TexDim);
+	checkfAlways(FragCount <= TexDim, "Not enough fragment memory: has %fMB, needs %fMB", Utils::ToMB(TexDim), Utils::ToMB(FragCount));
 	return { Positions, FragCount };
 }
 

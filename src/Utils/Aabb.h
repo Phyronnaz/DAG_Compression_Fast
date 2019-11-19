@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include <glm/glm.hpp>
+#include <vector>
 
 /**
 * An aabb defined by the min and max extrema.
@@ -77,4 +78,26 @@ inline FAABB MakeSquareAABB(const FAABB& AABB)
 	const glm::vec3 Centre = AABB.GetCentre();
 	const glm::vec3 NewHalfSize{ glm::max(HalfSize.x, glm::max(HalfSize.y, HalfSize.z)) };
 	return { Centre - NewHalfSize, Centre + NewHalfSize };
+}
+
+inline std::vector<FAABB> SplitAABB(const std::vector<FAABB>& Parent)
+{
+	std::vector<FAABB> Return;
+	Return.reserve(Parent.size() * 8);
+
+	for (const auto& AABB : Parent) {
+		const auto Centre = AABB.GetCentre();
+		const auto HalfSize = AABB.GetHalfSize();
+
+		for (int32 Index = 0; Index < 8; Index++) 
+		{
+			auto NewCentre = Centre;
+			NewCentre.x += HalfSize.x * (Index & 4 ? 0.5f : -0.5f);
+			NewCentre.y += HalfSize.y * (Index & 2 ? 0.5f : -0.5f);
+			NewCentre.z += HalfSize.z * (Index & 1 ? 0.5f : -0.5f);
+
+			Return.push_back(MakeAABB(NewCentre - 0.5f * HalfSize, NewCentre + 0.5f * HalfSize));
+		}
+	}
+	return Return;
 }

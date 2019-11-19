@@ -9,9 +9,9 @@
 class FVoxelizer
 {
 public:
-	const int32 GridSize;
+	const int32 SubGridSize;
 	const FScene& Scene;
-	static constexpr int32 TexDim = 200 * 1024 * 1024;
+	static constexpr int32 TexDim = FRAGMENTS_MEMORY_IN_MB * 1024 * 1024;
 
 private:
 	const std::vector<std::size_t> NodesToRender;
@@ -25,11 +25,11 @@ private:
 	uint64* Positions = nullptr;
 
 public:
-	explicit FVoxelizer(int32 GridSize, const FScene& Scene);
+	explicit FVoxelizer(int32 SubGridSize, const FScene& Scene);
 	~FVoxelizer();
 
 	// Array is only valid while the voxelizer object hasn't been destroyed!
-	TStaticArray<uint64, EMemoryType::GPU> GenerateFragments(const FAABB& AABB, int32 GridResolution) const;
+	TStaticArray<uint64, EMemoryType::GPU> GenerateFragments(const FAABB& AABB) const;
 
 private:
 	void Draw() const;
