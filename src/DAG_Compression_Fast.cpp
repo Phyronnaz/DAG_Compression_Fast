@@ -234,41 +234,26 @@ int main()
 
 #if 1
 	{
+		ZoneScopedN("Main");
+		
 		FGLTFLoader Loader("GLTF/Sponza/glTF/", "Sponza.gltf");
 		const auto Scene = Loader.GetScene();
 		AABB = MakeSquareAABB(Scene.AABB);
 
 		FVoxelizer Voxelizer(1 << LEVELS, Scene);
+		
+		const double GenerateFragmentsStartTime = Utils::Seconds();
+		const auto Fragments = Voxelizer.GenerateFragments(AABB, 1 << LEVELS);
+		LOG("GenerateFragments took %fs", Utils::Seconds() - GenerateFragmentsStartTime);
 
-		auto Data = Voxelizer.GenerateFragments(AABB, 1 << LEVELS);
-		LOG("%llu fragments", Data.Count);
+		LOG("%llu fragments", Fragments.Num());
 		LOG("Depth = %d", LEVELS);
-		FMemory::RegisterCustomAlloc(Data.Positions, "Fragments", Data.Count * sizeof(uint64), EMemoryType::GPU);
-#if 1
-		TStaticArray<uint64, EMemoryType::GPU> Fragments(Data.Positions, Data.Count);
-#else
-		const uint32 Size = 1 << LEVELS;
-		TDynamicArray<uint64, EMemoryType::GPU> Fragments("Fragments", uint64(Size) * Size * Size);
-		uint64 Index = 0;
-		for (uint32 X = 0; X < Size; ++X)
-		{
-			for (uint32 Y = 0; Y < Size; ++Y)
-			{
-				for (uint32 Z = 0; Z < Size; ++Z)
-				{
-					if (length(make_float3(float(X), float(Y), float(Z)) - make_float3(Size / 2.f)) < Size / 4.f)
-					{
-						Fragments[Index++] = mortonEncode64(X, Y, Z);
-					}
-				}
-			}
-		}
-		Fragments.Resize(Index);
-		Fragments.Shrink();
-#endif
-		Dag = DAGCompression::CreateDAG(Fragments, LEVELS);
 
-		FMemory::UnregisterCustomAlloc(Data.Positions);
+		const double CreateDAGStartTime = Utils::Seconds();
+		Dag = DAGCompression::CreateDAG(Fragments, LEVELS);
+		LOG("CreateDAG took %fs", Utils::Seconds() - CreateDAGStartTime);
+		LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
+		
 		FreeScene(Scene);
 	}
 #else

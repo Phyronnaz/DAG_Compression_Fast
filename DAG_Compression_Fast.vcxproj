@@ -22,6 +22,7 @@
     <ClCompile Include="src\glm\detail\glm.cpp" />
     <ClCompile Include="src\GLTFLoader.cpp" />
     <ClCompile Include="src\stb\stb_vorbis.c" />
+    <ClCompile Include="src\tracy\TracyClient.cpp" />
     <ClCompile Include="src\Utils\glm_extensions.cpp" />
     <ClCompile Include="src\Voxelizer.cpp" />
     <CudaCompile Include="src\DAGCompression.cu" />
@@ -388,6 +389,7 @@
     <ClInclude Include="src\stb\stb_truetype.h" />
     <ClInclude Include="src\stb\stb_voxel_render.h" />
     <ClInclude Include="src\stb\stretchy_buffer.h" />
+    <ClInclude Include="src\tracy\Tracy.hpp" />
     <ClInclude Include="src\Utils.h" />
     <ClInclude Include="src\Utils\Aabb.h" />
     <ClInclude Include="src\Utils\glm_extensions.h" />
@@ -669,7 +671,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>TRACY_ENABLE;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <TreatWarningAsError>true</TreatWarningAsError>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>

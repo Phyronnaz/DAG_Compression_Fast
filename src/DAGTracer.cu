@@ -161,11 +161,11 @@ struct FDAG
 	{
 		return 0;
 	}
-	HOST_DEVICE uint32 get_node(uint32 level, uint32 index) const
+	HOST_DEVICE uint32 get_node(uint32 /*level*/, uint32 index) const
 	{
 		return data[index];
 	}
-	HOST_DEVICE uint32 get_child_index(uint32 level, uint32 index, uint8 childMask, uint8 child) const
+	HOST_DEVICE uint32 get_child_index(uint32 /*level*/, uint32 index, uint8 childMask, uint8 child) const
 	{
 		return data[index + Utils::ChildOffset(childMask, child)];
 	}

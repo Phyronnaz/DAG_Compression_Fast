@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include "Array.h"
+#include <functional>
 
 namespace DAGCompression
 {

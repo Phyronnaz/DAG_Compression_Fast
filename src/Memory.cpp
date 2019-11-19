@@ -58,12 +58,14 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 		}
 		CUDA_CHECKED_CALL Error;
 		TotalAllocatedGpuMemory += Size;
+		MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
 	}
 	else
 	{
 		check(Type == EMemoryType::CPU);
 		Ptr = std::malloc(Size);
 		TotalAllocatedCpuMemory += Size;
+		MaxTotalAllocatedCpuMemory = std::max(TotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	Allocations[Ptr] = { Name, Size, Type };
@@ -82,12 +84,14 @@ void FMemory::FreeImpl(void* Ptr)
 		CUDA_CHECK_ERROR();
 		CUDA_CHECKED_CALL cudaFree(Ptr);
 		TotalAllocatedGpuMemory -= Alloc.Size;
+		MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
 	}
 	else
 	{
 		check(Alloc.Type == EMemoryType::CPU);
 		std::free(Ptr);
 		TotalAllocatedCpuMemory -= Alloc.Size;
+		MaxTotalAllocatedCpuMemory = std::max(TotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
 	Allocations.erase(Ptr);
 }
@@ -104,6 +108,11 @@ void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 	if (OldAlloc.Type == EMemoryType::GPU)
 	{
 		CUDA_CHECK_ERROR();
+		if (!bCopyData)
+		{
+			// Free ASAP
+			FreeImpl(OldPtr);
+		}
 		Ptr = MallocImpl(OldAlloc.Name, NewSize, OldAlloc.Type);
 		if (Ptr && bCopyData)
 		{
@@ -116,7 +125,10 @@ void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 				CUDA_CHECKED_CALL Error;
 			}
 		}
-		FreeImpl(OldPtr);
+		if (bCopyData)
+		{
+			FreeImpl(OldPtr);
+		}
 	}
 	else
 	{
@@ -144,11 +156,13 @@ void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, 
 	if (Type == EMemoryType::GPU)
 	{
 		TotalAllocatedGpuMemory += Size;
+		MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
 	}
 	else
 	{
 		check(Type == EMemoryType::CPU);
 		TotalAllocatedCpuMemory += Size;
+		MaxTotalAllocatedCpuMemory = std::max(TotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	Allocations[Ptr] = { Name, Size, Type };

@@ -1,4 +1,5 @@
 #include "Voxelizer.h"
+#include "Memory.h"
 #include "Utils/View.h"
 
 #include "glm/gtc/type_ptr.hpp"
@@ -191,6 +192,8 @@ FVoxelizer::FVoxelizer(int32 GridSize, const FScene& Scene)
 	, Scene(Scene)
 	, NodesToRender(GetNodesToRender(Scene))
 {
+	ZoneScoped;
+	
 	check(GridSize > 0);
 	const GLuint VertexShader = CompileShader(GL_VERTEX_SHADER, GetFileContents("Shaders/VertexShader.glsl").c_str());
 	const GLuint FragmentShader = CompileShader(GL_FRAGMENT_SHADER, GetFileContents("Shaders/FragmentShader.glsl").c_str());
@@ -209,7 +212,7 @@ FVoxelizer::FVoxelizer(int32 GridSize, const FScene& Scene)
 	// Data buffer (pos).
 	glGenBuffers(1, &PositionSSBO);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, PositionSSBO);
-	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64_t), nullptr, GL_STATIC_DRAW);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64), nullptr, GL_STATIC_DRAW);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
 	// Dummy framebuffer.
@@ -220,22 +223,30 @@ FVoxelizer::FVoxelizer(int32 GridSize, const FScene& Scene)
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	std::size_t NumBytes = 0;
-	cudaGraphicsGLRegisterBuffer(&CudaPositionResource, PositionSSBO, cudaGraphicsMapFlagsNone);
-	cudaGraphicsMapResources(1, &CudaPositionResource);
-	cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&Positions), &NumBytes, CudaPositionResource);
+	CUDA_CHECKED_CALL cudaGraphicsGLRegisterBuffer(&CudaPositionResource, PositionSSBO, cudaGraphicsMapFlagsNone);
+	CUDA_CHECKED_CALL cudaGraphicsMapResources(1, &CudaPositionResource);
+	CUDA_CHECKED_CALL cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&Positions), &NumBytes, CudaPositionResource);
+
+	FMemory::RegisterCustomAlloc(Positions, "Fragments", TexDim * sizeof(uint64), EMemoryType::GPU);
 }
 
 FVoxelizer::~FVoxelizer()
 {
+	ZoneScoped;
+	
 	glDeleteBuffers(1, &FragCtrBuffer);
 	glDeleteBuffers(1, &PositionSSBO);
 	glDeleteBuffers(1, &DummyFBO);
 
-	cudaGraphicsUnmapResources(1, &CudaPositionResource);
+	CUDA_CHECKED_CALL cudaGraphicsUnmapResources(1, &CudaPositionResource);
+
+	FMemory::UnregisterCustomAlloc(Positions);
 }
 
-FVoxelizer::FResult FVoxelizer::GenerateFragments(const FAABB& AABB, const int GridResolution) const
+TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB, const int GridResolution) const
 {
+	ZoneScoped;
+	
 	// Get ortho camera for given axis.
 	const FOrthographicView ViewX = GetCamera(AABB, EAxis::X);
 	const FOrthographicView ViewY = GetCamera(AABB, EAxis::Y);
@@ -287,11 +298,13 @@ FVoxelizer::FResult FVoxelizer::GenerateFragments(const FAABB& AABB, const int G
 	}
 	glUseProgram(0);
 	checkInf(FragCount, TexDim);
-	return FResult{ Positions, FragCount };
+	return { Positions, FragCount };
 }
 
 void FVoxelizer::Draw() const
 {
+	ZoneScoped;
+	
 	for (const auto& NodeToRender : NodesToRender) 
 	{
 		const auto& Node = Scene.SceneNodes[NodeToRender];

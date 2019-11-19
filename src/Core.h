@@ -1,10 +1,10 @@
 #pragma once
 
 #define ENABLE_CHECKS 1
-#define DEBUG_GPU_ARRAYS ENABLE_CHECKS
-#define ENABLE_FORCEINLINE 0
+#define DEBUG_GPU_ARRAYS 0
+#define ENABLE_FORCEINLINE !ENABLE_CHECKS
 #define ENABLE_FLATTEN 0
-#define LEVELS 11
+#define LEVELS 12
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -210,3 +210,8 @@ HOST_DEVICE T Cast(U Value)
 		int64(std::numeric_limits<T>::min()), int64(std::numeric_limits<T>::max()));
 	return static_cast<T>(Value);
 }
+
+#pragma warning ( push )
+#pragma warning ( disable: 4099 4456 4505 )
+#include "tracy/Tracy.hpp"
+#pragma warning ( pop )

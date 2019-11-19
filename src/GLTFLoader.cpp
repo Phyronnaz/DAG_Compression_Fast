@@ -346,6 +346,8 @@ GLuint UploadBin(const std::string& File, GLsizeiptr Count)
 FGLTFLoader::FGLTFLoader(const std::string& Path, const std::string& Filename)
 	: Path(Path)
 {
+	ZoneScoped;
+	
 	std::ifstream File(Path + Filename);
 	checkAlways(File.is_open());
 
@@ -356,6 +358,8 @@ FGLTFLoader::FGLTFLoader(const std::string& Path, const std::string& Filename)
 
 FScene FGLTFLoader::GetScene()
 {
+	ZoneScoped;
+	
 	FScene Result;
 	Root["bufferViews"].get_to(Result.BufferViews);
 	Root["accessors"].get_to(Result.Accessors);

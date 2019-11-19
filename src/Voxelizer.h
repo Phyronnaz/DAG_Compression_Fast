@@ -4,13 +4,14 @@
 #include "GL/glew.h"
 #include "Utils/Aabb.h"
 #include "GLTFLoader.h"
+#include "Array.h"
 
 class FVoxelizer
 {
 public:
 	const int32 GridSize;
 	const FScene& Scene;
-	static constexpr int32 TexDim = 128 * 1024 * 1024;
+	static constexpr int32 TexDim = 200 * 1024 * 1024;
 
 private:
 	const std::vector<std::size_t> NodesToRender;
@@ -27,14 +28,8 @@ public:
 	explicit FVoxelizer(int32 GridSize, const FScene& Scene);
 	~FVoxelizer();
 
-	struct FResult
-	{
-		// GPU array!
-		uint64* Positions = nullptr;
-		uint64 Count = 0;
-	};
-	// FResult is only valid while the voxelizer object hasn't been destroyed!
-	FResult GenerateFragments(const FAABB& AABB, int32 GridResolution) const;
+	// Array is only valid while the voxelizer object hasn't been destroyed!
+	TStaticArray<uint64, EMemoryType::GPU> GenerateFragments(const FAABB& AABB, int32 GridResolution) const;
 
 private:
 	void Draw() const;

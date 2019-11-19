@@ -22,7 +22,8 @@ public:
 
     template<typename T>
     static T* Malloc(const char* Name, uint64 Size, EMemoryType Type)
-    {
+	{
+		ZoneScoped;
         checkAlways(Size % sizeof(T) == 0);
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
         return reinterpret_cast<T*>(Singleton.MallocImpl(Name, Size, Type));
@@ -30,12 +31,14 @@ public:
     template<typename T>
     static void Free(T* Ptr)
     {
+		ZoneScoped;
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
         Singleton.FreeImpl(reinterpret_cast<void*>(Ptr));
     }
     template<typename T>
     static void Realloc(T*& Ptr, uint64 NewSize, bool bCopyData = true)
     {
+		ZoneScoped;
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 		void* Copy = reinterpret_cast<void*>(Ptr);
         Singleton.ReallocImpl(Copy, NewSize, bCopyData);
@@ -69,11 +72,23 @@ public:
 public:
     inline static uint64 GetCpuAllocatedMemory()
     {
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
         return Singleton.TotalAllocatedCpuMemory;
     }
     inline static uint64 GetGpuAllocatedMemory()
     {
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
         return Singleton.TotalAllocatedGpuMemory;
+    }
+    inline static uint64 GetCpuMaxAllocatedMemory()
+    {
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+        return Singleton.MaxTotalAllocatedCpuMemory;
+    }
+    inline static uint64 GetGpuMaxAllocatedMemory()
+    {
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+        return Singleton.MaxTotalAllocatedGpuMemory;
     }
 
 private:
@@ -91,6 +106,8 @@ private:
     std::mutex Mutex;
     size_t TotalAllocatedGpuMemory = 0;
     size_t TotalAllocatedCpuMemory = 0;
+    size_t MaxTotalAllocatedGpuMemory = 0;
+    size_t MaxTotalAllocatedCpuMemory = 0;
     std::unordered_map<void*, Element> Allocations;
 
     static FMemory Singleton;

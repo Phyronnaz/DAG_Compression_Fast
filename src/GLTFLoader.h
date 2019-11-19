@@ -162,6 +162,8 @@ constexpr GLuint NO_ID_SENTINEL = 0xFFFFFFFF;
 
 inline void FreeScene(const FScene& Scene)
 {
+	ZoneScoped;
+	
 	glDeleteBuffers(uint32(Scene.BufferObjects.size()), Scene.BufferObjects.data());
 	glDeleteTextures(uint32(Scene.Textures.size()), Scene.Textures.data());
 	glDeleteVertexArrays(1, &MASTER_VAO);
