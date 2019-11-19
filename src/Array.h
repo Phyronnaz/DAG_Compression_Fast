@@ -13,14 +13,12 @@ public:
 		: ArrayData(Data)
 		, ArraySize(Size)
 	{
-		const auto Info = FMemory::GetAllocInfo(Data);
-		checkAlways(Info.Size == sizeof(TElementType) * Size);
-		checkAlways(Info.Type == MemoryType);
 	}
 	TStaticArray(const char* Name, TSize Size)
 		: ArrayData(FMemory::Malloc<TElementType>(Name, Size * sizeof(TElementType), MemoryType))
 		, ArraySize(Size)
 	{
+		LOG("Alloc: %s; %" PRIu64 " elements", Name, Size);
 	}
 	explicit TStaticArray(decltype(nullptr))
 		: TStaticArray(nullptr, 0)
