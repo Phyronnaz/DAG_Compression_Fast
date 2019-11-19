@@ -18,7 +18,6 @@ public:
 		: ArrayData(FMemory::Malloc<TElementType>(Name, Size * sizeof(TElementType), MemoryType))
 		, ArraySize(Size)
 	{
-		LOG("Alloc: %s; %" PRIu64 " elements", Name, Size);
 	}
 	explicit TStaticArray(decltype(nullptr))
 		: TStaticArray(nullptr, 0)
@@ -46,6 +45,8 @@ public:
 
 	HOST TStaticArray<TElementType, EMemoryType::GPU, TSize> CreateGPU() const
 	{
+		ZoneScoped;
+		
 		static_assert(MemoryType == EMemoryType::CPU, "");
 	    check(IsValid());
         auto Result = TStaticArray<TElementType, EMemoryType::GPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
@@ -54,6 +55,8 @@ public:
     }
 	HOST TStaticArray<TElementType, EMemoryType::CPU, TSize> CreateCPU() const
 	{
+		ZoneScoped;
+		
 		static_assert(MemoryType == EMemoryType::GPU, "");
 	    check(IsValid());
         auto Result = TStaticArray<TElementType, EMemoryType::CPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
@@ -63,12 +66,16 @@ public:
 
     HOST void CopyToGPU(TStaticArray<TElementType, EMemoryType::GPU, TSize>& GpuArray) const
     {
+		ZoneScoped;
+		
 		static_assert(MemoryType == EMemoryType::CPU, "");
         check(GpuArray.Num() == Num());
         CUDA_CHECKED_CALL cudaMemcpy(GpuArray.GetData(), GetData(), Num() * sizeof(TElementType), cudaMemcpyHostToDevice);
     }
     HOST void CopyToCPU(TStaticArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
     {
+		ZoneScoped;
+		
 		static_assert(MemoryType == EMemoryType::GPU, "");
         check(CpuArray.Num() == Num());
         CUDA_CHECKED_CALL cudaMemcpy(CpuArray.GetData(), GetData(), Num() * sizeof(TElementType), cudaMemcpyDeviceToHost);
@@ -76,6 +83,8 @@ public:
 
 	HOST void MemSet(uint8 Value)
 	{
+		ZoneScoped;
+		
 		if (MemoryType == EMemoryType::GPU)
 		{
 			CUDA_CHECKED_CALL cudaMemset(GetData(), Value, sizeof(TElementType) * Num());
@@ -204,6 +213,8 @@ public:
 
     HOST void CopyToGPU(TDynamicArray<TElementType, EMemoryType::GPU, TSize>& GPUArray) const
     {
+		ZoneScoped;
+		
 		static_assert(MemoryType == EMemoryType::CPU, "");
         if (!GPUArray.is_valid())
         {
@@ -255,6 +266,8 @@ public:
 	
 	HOST void Resize(TSize NewSize)
 	{
+		ZoneScoped;
+		
 		checkInfEqual(this->ArraySize, AllocatedSize);
 		check(this->ArrayData); // For the name
 		this->ArraySize = NewSize;
@@ -267,6 +280,8 @@ public:
 	}
 	HOST void ResizeUninitialized(TSize NewSize)
 	{
+		ZoneScoped;
+		
 		checkInfEqual(this->ArraySize, AllocatedSize);
 		check(this->ArrayData); // For the name
 		this->ArraySize = NewSize;
@@ -280,6 +295,8 @@ public:
 	
 	HOST void Shrink()
 	{
+		ZoneScoped;
+		
 		check(this->ArrayData);
 		check(this->ArraySize != 0);
 		checkInfEqual(this->ArraySize, AllocatedSize);

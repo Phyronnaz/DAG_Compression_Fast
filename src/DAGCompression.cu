@@ -37,8 +37,10 @@ struct FPool
 	std::unordered_map<void*, bool> IsOpenGLBuffer;
 
 	template<typename T>
-	T* Allocate(uint64 Size)
+	T* Malloc(uint64 Size)
 	{
+		ZoneScoped;
+		
 		const uint64 SizeInBytes = Size * sizeof(T);
 		FAlloc BestMatch;
 		uint64 BestMatchIndex = 0;
@@ -67,6 +69,8 @@ struct FPool
 	template<typename T>
 	void Free(T* Ptr)
 	{
+		ZoneScoped;
+		
 		void* VoidPtr = reinterpret_cast<void*>(Ptr);
 		check(VoidPtr);
 		check(Sizes.find(VoidPtr) != Sizes.end());
@@ -76,7 +80,7 @@ struct FPool
 	template<typename T>
 	TStaticArray<T, EMemoryType::GPU> CreateArray(uint64 Size)
 	{
-		return { Allocate<T>(Size), Size };
+		return { Malloc<T>(Size), Size };
 	}
 	template<typename T>
 	TDynamicArray<T, EMemoryType::GPU> CreateDynamicArray(uint64 Size)
@@ -197,7 +201,7 @@ inline void SelectUnique(
 	
 	checkEqual(Src.Num(), Dst.Num());
 
-	SINGLE_GPU_ELEMENT(int32, NumSelected);
+	SINGLE_GPU_ELEMENT(int32, NumSelected, Pool);
 
 	size_t TempStorageBytes;
 	CUDA_CHECKED_CALL cub::DeviceSelect::Unique(nullptr, TempStorageBytes, Src.GetData(), Dst.GetData(), NumSelected.ToGPU(), Cast<int32>(Src.Num()));
@@ -232,7 +236,7 @@ inline void ReduceByKey(
 
 	using KeyType = decltype(Keys[0]);
 	
-	SINGLE_GPU_ELEMENT(int32, NumRuns);
+	SINGLE_GPU_ELEMENT(int32, NumRuns, Pool);
 
 	const auto KeysIt = TransformIterator(Keys.GetData(), KeysTransform);
 	const auto ValuesIt = TransformIterator(Values.GetData(), ValuesTransform);
@@ -496,12 +500,6 @@ inline void LogRemoved(const char* Name, uint64 Before, uint64 After)
 	LOG("%s: %llu elements (%f%%) removed", Name, Before - After, double(Before - After) * 100. / Before);
 }
 
-struct FChildrenIndices
-{
-	uint32 Indices[8];
-};
-static_assert(sizeof(FChildrenIndices) == 8 * sizeof(uint32), "");
-
 HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const TStaticArray<uint64, EMemoryType::GPU>& ChildrenArray)
 {
 	uint64 Data[8];
@@ -513,7 +511,11 @@ HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const T
 	return Utils::MurmurHash128xN(reinterpret_cast<const uint128*>(Data), 4).Data[0];
 }
 
-struct FLevel
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+struct FGpuLevel
 {
 	TStaticArray<uint8, EMemoryType::GPU> ChildMasks;
 	TStaticArray<FChildrenIndices, EMemoryType::GPU> ChildrenIndices;
@@ -521,14 +523,39 @@ struct FLevel
 	TStaticArray<uint32, EMemoryType::GPU> ChildPositions;
 	uint32 NumWords = 0;
 
-	void Free(FPool& Pool)
+	FCpuLevel ToCPU() const
+	{
+		FCpuLevel CpuLevel;
+
+		CpuLevel.ChildMasks = TStaticArray<uint8, EMemoryType::CPU>("ChildMasks", ChildMasks.Num());
+		CpuLevel.ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::CPU>("ChildrenIndices", ChildrenIndices.Num());
+		CpuLevel.Hashes = TStaticArray<uint64, EMemoryType::CPU>("Hashes", Hashes.Num());
+
+		ChildMasks.CopyToCPU(CpuLevel.ChildMasks);
+		ChildrenIndices.CopyToCPU(CpuLevel.ChildrenIndices);
+		Hashes.CopyToCPU(CpuLevel.Hashes);
+
+		return CpuLevel;
+	}
+	void FromCPU(FPool& Pool, const FCpuLevel& CpuLevel)
+	{
+		ChildMasks = Pool.CreateArray<uint8>(CpuLevel.ChildMasks.Num());
+		ChildrenIndices = Pool.CreateArray<FChildrenIndices>(CpuLevel.ChildrenIndices.Num());
+		Hashes = Pool.CreateArray<uint64>(CpuLevel.Hashes.Num());
+
+		CpuLevel.ChildMasks.CopyToGPU(ChildMasks);
+		CpuLevel.ChildrenIndices.CopyToGPU(ChildrenIndices);
+		CpuLevel.Hashes.CopyToGPU(Hashes);
+	}
+
+	void Free(FPool& Pool, bool bFreeHashes = true)
 	{
 		ZoneScoped;
 
 		Pool.FreeArray(ChildMasks);
 		Pool.FreeArray(ChildrenIndices);
-		Pool.FreeArray(Hashes);
-		Pool.FreeArray(ChildPositions);
+		if (bFreeHashes) Pool.FreeArray(Hashes);
+		if (ChildPositions.IsValid()) Pool.FreeArray(ChildPositions);
 	}
 
 	void ComputeHashes(FPool& Pool, const TStaticArray<uint64, EMemoryType::GPU>& LowerLevelHashes)
@@ -620,14 +647,14 @@ void SortLevel(
 	Sort(InOutHashes);
 }
 
-FLevel ExtractLevel(
+FGpuLevel ExtractLevel(
 	FPool& Pool,
 	TStaticArray<uint64, EMemoryType::GPU>& InOutFragments,
 	const TStaticArray<uint32, EMemoryType::GPU>& FragmentIndicesToChildrenIndices)
 {
 	ZoneScoped;
 
-	FLevel OutLevel;
+	FGpuLevel OutLevel;
 	
 	const auto Fragments = InOutFragments;
 
@@ -699,11 +726,17 @@ void CheckDag(const TStaticArray<uint32, EMemoryType::GPU>& Dag, uint32 Index, u
 	}
 }
 
-TStaticArray<uint32, EMemoryType::GPU> DAGCompression::CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& InFragments, const int32 Depth)
+inline FPool& GetPool()
+{
+	static FPool Pool;
+	return Pool;
+}
+
+FCpuDag DAGCompression::CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& InFragments, const int32 Depth)
 {
 	ZoneScoped;
 	
-	FPool Pool;
+	FPool& Pool = GetPool();
 
 	TStaticArray<uint64, EMemoryType::GPU> Fragments;
 	{
@@ -750,41 +783,89 @@ TStaticArray<uint32, EMemoryType::GPU> DAGCompression::CreateDAG(const TStaticAr
 		Pool.FreeArray(Fragments);
 		Fragments = Pool.ShrinkArray(Parents);
 	}
-
-	std::vector<FLevel> Levels(Depth - 2);
+	
+	FCpuDag CpuDag;
+	CpuDag.Levels.resize(Depth - 2);
+	std::vector<FGpuLevel> Levels(Depth - 2);
 
 	TStaticArray<uint32, EMemoryType::GPU> FragmentIndicesToChildrenIndices;
 	SortLevel(Pool, Leaves, FragmentIndicesToChildrenIndices, [&](auto) {});
 
-	{
-		FLevel Level = ExtractLevel(Pool, Fragments, FragmentIndicesToChildrenIndices);
-		Pool.FreeArray(FragmentIndicesToChildrenIndices);
-		
-		Level.ComputeHashes(Pool, Leaves);
-
-		SortLevel(Pool, Level.Hashes, FragmentIndicesToChildrenIndices, [&](auto Sort) { Sort(Level.ChildrenIndices); Sort(Level.ChildMasks); });
-
-		Levels[Depth - 3] = Level;
-	}
-
-	for (int32 LevelDepth = Depth - 4; LevelDepth >= 0; LevelDepth--)
+	for (int32 LevelDepth = Depth - 3; LevelDepth >= 0; LevelDepth--)
 	{
 		LOG("Level %d", LevelDepth);
 		
-		FLevel Level = ExtractLevel(Pool, Fragments, FragmentIndicesToChildrenIndices);
+		FGpuLevel Level = ExtractLevel(Pool, Fragments, FragmentIndicesToChildrenIndices);
 		Pool.FreeArray(FragmentIndicesToChildrenIndices);
-		
-		Level.ComputeHashes(Pool, Levels.back().Hashes);
+
+		const bool IsAboveLeaves = LevelDepth == Depth - 3;
+		if (IsAboveLeaves)
+		{
+			Level.ComputeHashes(Pool, Leaves);
+
+			CpuDag.Leaves = TStaticArray<uint64, EMemoryType::CPU>("Leaves", Leaves.Num());
+			Leaves.CopyToCPU(CpuDag.Leaves);
+			Pool.FreeArray(Leaves);
+		}
+		else
+		{
+			Level.ComputeHashes(Pool, Levels[LevelDepth + 1].Hashes);
+			Pool.FreeArray(Levels[LevelDepth + 1].Hashes);
+		}
 
 		SortLevel(Pool, Level.Hashes, FragmentIndicesToChildrenIndices, [&](auto Sort) { Sort(Level.ChildrenIndices); Sort(Level.ChildMasks); });
 
 		Levels[LevelDepth] = Level;
+		CpuDag.Levels[LevelDepth] = Level.ToCPU();
+		Level.Free(Pool, false);
 	}
 	check(Levels[0].Hashes.Num() == 1);
+	Pool.FreeArray(Levels[0].Hashes);
 
 	Pool.FreeArray(FragmentIndicesToChildrenIndices);
 	Pool.FreeArray(Fragments);
+		
+	return CpuDag;
+}
 
+TStaticArray<uint64, EMemoryType::GPU> Merge(
+	FPool& Pool,
+	const TStaticArray<uint64, EMemoryType::GPU>& A,
+	const TStaticArray<uint64, EMemoryType::GPU>& B)
+{
+	Pool.CreateArray<uint64>(A.Num() + B.Num());
+	return {};
+}
+
+FCpuDag DAGCompression::MergeDAGs(const std::vector<FCpuDag>& CpuDags)
+{
+	const int32 Depth = int32(CpuDags[0].Levels.size()) + 3;
+	for (auto& CpuDag : CpuDags)
+	{
+		checkEqual(CpuDag.Levels.size() + 3, Depth);
+	}
+	return {};
+}
+
+TStaticArray<uint32, EMemoryType::GPU> DAGCompression::CreateFinalDAG(FCpuDag&& CpuDag)
+{
+	ZoneScoped;
+	
+	FPool& Pool = GetPool();
+	
+	std::vector<FGpuLevel> Levels;
+	for (auto& Level : CpuDag.Levels)
+	{
+		Levels.push_back({});
+		Levels.back().FromCPU(Pool, Level);
+		Level.ChildMasks.Free();
+		Level.ChildrenIndices.Free();
+		Level.Hashes.Free();
+	}
+	auto Leaves = Pool.CreateArray<uint64>(CpuDag.Leaves.Num());
+	CpuDag.Leaves.CopyToGPU(Leaves);
+	CpuDag.Leaves.Free();
+	
 	uint64 Num = 0;
 	for (auto& Level : Levels)
 	{
@@ -819,16 +900,17 @@ TStaticArray<uint32, EMemoryType::GPU> DAGCompression::CreateDAG(const TStaticAr
 #if ENABLE_CHECKS && DEBUG_GPU_ARRAYS
 	CheckDag(Dag, 0, 0);
 #endif
-	
+		
 	for (auto& Level : Levels)
 	{
 		Level.Free(Pool);
 	}
 	Pool.FreeArray(Leaves);
 
-	Pool.FreeAll();
-	
-	std::cout << FMemory::GetStatsString();
-	
 	return Dag;
+}
+
+void DAGCompression::FreeAll()
+{
+	GetPool().FreeAll();
 }

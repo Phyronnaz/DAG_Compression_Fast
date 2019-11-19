@@ -7,7 +7,7 @@
 #define LEVELS 12
 
 #define SUBDAG_LEVELS 12
-#define FRAGMENTS_MEMORY_IN_MB 200
+#define FRAGMENTS_MEMORY_IN_MB 160
 
 static_assert(SUBDAG_LEVELS <= LEVELS, "");
 

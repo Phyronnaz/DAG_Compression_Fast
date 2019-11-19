@@ -113,17 +113,18 @@ private:
     static FMemory Singleton;
 };
 
-template<typename T>
+template<typename T, typename TPool>
 class TGPUSingleElementAlloc
 {
 public:
-	TGPUSingleElementAlloc(const char* Name)
-		: Ptr(FMemory::Malloc<T>(Name, sizeof(T), EMemoryType::GPU))
+	TGPUSingleElementAlloc(TPool& Pool)
+		: Ptr(Pool.template Malloc<T>(sizeof(T)))
+		, Pool(Pool)
 	{
 	}
 	~TGPUSingleElementAlloc()
 	{
-		FMemory::Free(Ptr);
+		Pool.Free(Ptr);
 	}
 
 	inline T* ToGPU() const
@@ -139,6 +140,7 @@ public:
 
 private:
 	T* const Ptr;
+	TPool& Pool;
 };
 
-#define SINGLE_GPU_ELEMENT(Type, Name) const TGPUSingleElementAlloc<Type> Name(__FILE__ ":" STR(__LINE__))
+#define SINGLE_GPU_ELEMENT(Type, Name, Pool) const TGPUSingleElementAlloc<Type, decltype(Pool)> Name(Pool)

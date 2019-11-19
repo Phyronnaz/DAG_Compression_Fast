@@ -150,6 +150,7 @@ struct FAppState
 	glm::ivec2 NewMouse{ 0, 0 };
 	bool Loop = true;
 	FTimer FrameTimer;
+	uint32 DebugLevel = 0xFFFFFFFF;
 
 	void HandleEvents()
 	{
@@ -173,6 +174,18 @@ struct FAppState
 		if (KeyState[SDL_SCANCODE_A]) { Camera.Position -= MoveScaleFactor * Camera.Rotation[0]; }
 		if (KeyState[SDL_SCANCODE_E]) { Camera.Position += MoveScaleFactor * Camera.Rotation[1]; }
 		if (KeyState[SDL_SCANCODE_Q]) { Camera.Position -= MoveScaleFactor * Camera.Rotation[1]; }
+
+		if (KeyState[SDL_SCANCODE_1]) { DebugLevel = 0; }
+		if (KeyState[SDL_SCANCODE_2]) { DebugLevel = 1; }
+		if (KeyState[SDL_SCANCODE_3]) { DebugLevel = 2; }
+		if (KeyState[SDL_SCANCODE_4]) { DebugLevel = 3; }
+		if (KeyState[SDL_SCANCODE_5]) { DebugLevel = 4; }
+		if (KeyState[SDL_SCANCODE_6]) { DebugLevel = 5; }
+		if (KeyState[SDL_SCANCODE_7]) { DebugLevel = 6; }
+		if (KeyState[SDL_SCANCODE_8]) { DebugLevel = 7; }
+		if (KeyState[SDL_SCANCODE_9]) { DebugLevel = 8; }
+		if (KeyState[SDL_SCANCODE_0]) { DebugLevel = 0xFFFFFFFF; }
+		
 
 		const uint32 MouseState = SDL_GetMouseState(&NewMouse.x, &NewMouse.y);
 		constexpr uint32 LeftMouseButton  { 1 << 0 };
@@ -247,9 +260,9 @@ int main()
 		const int32 NumberOfSplits = LEVELS - SUBDAG_LEVELS;
 		std::vector<FAABB> AABBs = { AABB };
 		for (int32 Index = 0; Index < NumberOfSplits; Index++) AABBs = SplitAABB(AABBs);
-		check(AABBs.size() == 1 << (3 * NumberOfSplits))
+		check(AABBs.size() == (1 << (3 * NumberOfSplits)));
 
-			FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
+		FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
 
 		double TotalGenerateFragmentsTime = 0;
 		double TotalCreateDAGTime = 0;
@@ -257,7 +270,7 @@ int main()
 		for (auto& LocalAABB : AABBs)
 		{
 			const double GenerateFragmentsStartTime = Utils::Seconds();
-			const auto Fragments = Voxelizer.GenerateFragments(AABB);
+			const auto Fragments = Voxelizer.GenerateFragments(LocalAABB);
 			const double GenerateFragmentsElapsed = Utils::Seconds() - GenerateFragmentsStartTime;
 			TotalGenerateFragmentsTime += GenerateFragmentsElapsed;
 			LOG("GenerateFragments took %fs", GenerateFragmentsElapsed);
@@ -265,13 +278,25 @@ int main()
 			LOG("%llu fragments", Fragments.Num());
 
 			const double CreateDAGStartTime = Utils::Seconds();
-			Dag = DAGCompression::CreateDAG(Fragments, SUBDAG_LEVELS);
+			auto CpuDag = DAGCompression::CreateDAG(Fragments, SUBDAG_LEVELS);
 			const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
 			TotalCreateDAGTime += CreateDAGElapsed;
 			LOG("CreateDAG took %fs", CreateDAGElapsed);
+
+			const double CreateFinalDAGStartTime = Utils::Seconds();
+			Dag = DAGCompression::CreateFinalDAG(std::move(CpuDag));
+			const double CreateFinalDAGElapsed = Utils::Seconds() - CreateFinalDAGStartTime;
+			LOG("CreateFinalDAG took %fs", CreateFinalDAGElapsed);
 		}
+
+		const double FreeAllStartTime = Utils::Seconds();
+		DAGCompression::FreeAll();
+		const double FreeAllElapsed = Utils::Seconds() - FreeAllStartTime;
+		LOG("FreeAll took %fs", FreeAllElapsed);
 		
 		LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
+
+		std::cout << FMemory::GetStatsString();
 		
 		FreeScene(Scene);
 	}
@@ -304,7 +329,7 @@ int main()
 			App.FrameTimer.Start();
 			App.HandleEvents();
 
-			auto Params = FDAGTracer::GetTraceParams(App.Camera, Width, Height, AABB);
+			auto Params = FDAGTracer::GetTraceParams(App.DebugLevel, App.Camera, Width, Height, AABB);
 			DagTracer.ResolvePaths(Params, Dag);
 
 			glViewport(0, 0, ScreenDim.x, ScreenDim.y);

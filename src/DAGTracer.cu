@@ -321,6 +321,8 @@ __global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, cons
 		(rayDirection.y < 0.f ? 2 : 0) +
 		(rayDirection.z < 0.f ? 1 : 0);
 
+	uint32 DebugIndex = 0;
+	
 	// State
 	uint32 level = 0;
 	FPath path(0, 0, 0);
@@ -367,6 +369,11 @@ __global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, cons
 			stack[level] = cache;
 			level++;
 
+			if (LEVELS - 2 - level == traceParams.DebugLevel)
+			{
+				DebugIndex = cache.index;
+			}
+
 			// If we're at the final level, we have intersected a single voxel.
 			if (level == dag.levels)
 			{
@@ -408,8 +415,16 @@ __global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, cons
 
 	const auto p = path.path;
 
-	const float3 color = make_float3(p.x & 0xFF, p.y & 0xFF, p.z & 0xFF) / make_float3(0xFF);
-	surf2Dwrite(float3_to_rgb888(color), surface, pixel.x * sizeof(uint32), pixel.y);
+	uint32 color;
+	if (traceParams.DebugLevel == 0xFFFFFFFF)
+	{
+		color = float3_to_rgb888(make_float3(p.x & 0xFF, p.y & 0xFF, p.z & 0xFF) / make_float3(0xFF));
+	}
+	else
+	{
+		color = Utils::MurmurHash32(DebugIndex);
+	}
+	surf2Dwrite(color, surface, pixel.x * sizeof(uint32), pixel.y);
 }
 
 void FDAGTracer::ResolvePaths(const TracePathsParams& Params, const TStaticArray<uint32, EMemoryType::GPU>& Dag)

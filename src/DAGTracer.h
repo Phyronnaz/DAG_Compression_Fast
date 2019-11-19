@@ -16,6 +16,9 @@ public:
 
 	struct TracePathsParams
 	{
+		// if 0xFFFFFFFF will use world position as color instead
+		uint32 DebugLevel = 0;
+		
 		uint32 width;
 		uint32 height;
 
@@ -28,6 +31,7 @@ public:
 
 	template<typename T1, typename T2>
 	inline static TracePathsParams GetTraceParams(
+		uint32 DebugLevel,
 		const T1& View, 
 		const uint32 Width, 
 		const uint32 Height,
@@ -66,6 +70,8 @@ public:
 
 		TracePathsParams params;
 
+		params.DebugLevel = DebugLevel;
+		
 		params.width = Width;
 		params.height = Height;
 
