@@ -160,10 +160,10 @@ struct FScene
 extern GLuint MASTER_VAO;
 constexpr GLuint NO_ID_SENTINEL = 0xFFFFFFFF;
 
-inline void FreeScene(FScene& scene)
+inline void FreeScene(const FScene& Scene)
 {
-	glDeleteBuffers(uint32(scene.BufferObjects.size()), scene.BufferObjects.data());
-	glDeleteTextures(uint32(scene.Textures.size()), scene.Textures.data());
+	glDeleteBuffers(uint32(Scene.BufferObjects.size()), Scene.BufferObjects.data());
+	glDeleteTextures(uint32(Scene.Textures.size()), Scene.Textures.data());
 	glDeleteVertexArrays(1, &MASTER_VAO);
 	MASTER_VAO = 0;
 }

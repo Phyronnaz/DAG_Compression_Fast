@@ -3,6 +3,12 @@
 #include "Core.h"
 #include <chrono>
 
+struct uint128
+{
+	uint64 Data[2];
+};
+static_assert(sizeof(uint128) == 2 * sizeof(uint64), "");
+
 namespace Utils
 {
 	HOST_DEVICE uint32 Popc(uint32 A)
@@ -31,6 +37,10 @@ namespace Utils
 		return Popc(uint32(A >> 32)) + Popc(uint32(A & 0xFFFFFFFF));
 #endif
 #endif
+	}
+	HOST_DEVICE uint64 Rotl64(uint64 X, int8 R)
+	{
+		return (X << R) | (X >> (64 - R));
 	}
 	template<uint32 Bit = 31>
 	HOST_DEVICE bool HasFlag(uint32 Index)
@@ -63,6 +73,7 @@ namespace Utils
 	{
 		return Popc(ChildMask & ((1u << Child) - 1u)) + 1;
 	}
+
 	HOST_DEVICE uint32 MurmurHash32(uint32 H)
 	{
 		H ^= H >> 16;
@@ -82,12 +93,12 @@ namespace Utils
 		return H;
 	}
 
-	HOST_DEVICE uint32 MurmurHash32xN(uint32 const* Hash, uint64 Size, uint32 Seed = 0)
+	HOST_DEVICE uint32 MurmurHash32xN(const uint32* Data, const uint32 Size, const uint32 Seed = 0)
 	{
 		uint32 H = Seed;
-		for (uint64 Index = 0; Index < Size; ++Index)
+		for (uint32 Index = 0; Index < Size; ++Index)
 		{
-			uint32 K = Hash[Index];
+			uint32 K = Data[Index];
 			K *= 0xcc9e2d51;
 			K = (K << 15) | (K >> 17);
 			K *= 0x1b873593;
@@ -96,13 +107,50 @@ namespace Utils
 			H = H * 5 + 0xe6546b64;
 		}
 
-		H ^= uint32(Size);
+		H ^= Size;
 		H ^= H >> 16;
 		H *= 0x85ebca6b;
 		H ^= H >> 13;
 		H *= 0xc2b2ae35;
 		H ^= H >> 16;
 		return H;
+	}
+
+	HOST_DEVICE uint128 MurmurHash128xN(const uint128* Data, const uint32 Size, const uint32 Seed = 0)
+	{
+		uint64 H1 = Seed;
+		uint64 H2 = Seed;
+
+		constexpr uint64 C1 = 0x87c37b91114253d5llu;
+		constexpr uint64 C2 = 0x4cf5ad432745937fllu;
+
+		for (uint32 Index = 0; Index < Size; Index++)
+		{
+			uint64 K1 = Data[Index].Data[0];
+			uint64 K2 = Data[Index].Data[1];
+
+			K1 *= C1; K1 = Rotl64(K1, 31); K1 *= C2; H1 ^= K1;
+
+			H1 = Rotl64(H1, 27); H1 += H2; H1 = H1 * 5 + 0x52dce729;
+
+			K2 *= C2; K2 = Rotl64(K2, 33); K2 *= C1; H2 ^= K2;
+
+			H2 = Rotl64(H2, 31); H2 += H1; H2 = H2 * 5 + 0x38495ab5;
+		}
+
+		H1 ^= Size;
+		H2 ^= Size;
+
+		H1 += H2;
+		H2 += H1;
+
+		H1 = MurmurHash64(H1);
+		H2 = MurmurHash64(H2);
+
+		H1 += H2;
+		H2 += H1;
+
+		return { H1, H2 };
 	}
 
 	template<typename T>

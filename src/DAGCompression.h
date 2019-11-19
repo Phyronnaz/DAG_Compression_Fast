@@ -5,5 +5,5 @@
 
 namespace DAGCompression
 {
-	TStaticArray<uint32, EMemoryType::GPU> CreateDAG(TStaticArray<uint64, EMemoryType::GPU> Fragments, int32 Depth);
+	TStaticArray<uint32, EMemoryType::GPU> CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& Fragments, int32 Depth);
 }

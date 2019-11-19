@@ -367,6 +367,7 @@
     <ClInclude Include="src\GLTFLoader.h" />
     <ClInclude Include="src\Memory.h" />
     <ClInclude Include="src\nlohmann\json.hpp" />
+    <ClInclude Include="src\Serializer.h" />
     <ClInclude Include="src\stb\stb.h" />
     <ClInclude Include="src\stb\stb_connected_components.h" />
     <ClInclude Include="src\stb\stb_c_lexer.h" />
@@ -638,7 +639,7 @@
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <CodeGeneration>compute_61,sm_61</CodeGeneration>
       <Warning>InheritFromHost</Warning>
-      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706 /wd4324 /wd4515 /wd4127" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -662,8 +663,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <PrecompiledHeader>
-      </PrecompiledHeader>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -676,6 +676,8 @@
       <LanguageStandard>stdcpp17</LanguageStandard>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <DisableSpecificWarnings>4100;4127;4201;4389;4514;4571;4623;4625;4626;4623;4668;4710;4711;4774;4820;5026;5027;5039;5045</DisableSpecificWarnings>
+      <PrecompiledHeaderFile>
+      </PrecompiledHeaderFile>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -687,7 +689,7 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <CodeGeneration>compute_61,sm_61</CodeGeneration>
-      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>-Xcompiler "/wd 4201 /wd 4706 /wd4324 /wd4515 /wd4127" --expt-relaxed-constexpr --expt-extended-lambda %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -27,6 +27,25 @@ public:
 	{
 	}
 
+	template<typename TOther>
+	HOST TStaticArray<TOther, MemoryType, TSize> CastTo() const
+	{
+		checkAlways((ArraySize * sizeof(TElementType)) % sizeof(TOther) == 0);
+
+		TStaticArray<TOther, MemoryType, TSize> Result;
+		Result.ArrayData = reinterpret_cast<TOther*>(ArrayData);
+		Result.ArraySize = (ArraySize * sizeof(TElementType)) / sizeof(TOther);
+		return Result;
+	}
+
+	HOST TStaticArray<TElementType, MemoryType, TSize>& operator=(const TStaticArray<TElementType, MemoryType, TSize>& Other)
+	{
+		check(!IsValid());
+		ArrayData = Other.ArrayData;
+		ArraySize = Other.ArraySize;
+		return *this;
+	}
+
 	HOST TStaticArray<TElementType, EMemoryType::GPU, TSize> CreateGPU() const
 	{
 		static_assert(MemoryType == EMemoryType::CPU, "");
@@ -55,11 +74,28 @@ public:
 		static_assert(MemoryType == EMemoryType::GPU, "");
         check(CpuArray.Num() == Num());
         CUDA_CHECKED_CALL cudaMemcpy(CpuArray.GetData(), GetData(), Num() * sizeof(TElementType), cudaMemcpyDeviceToHost);
-    }
+	}
+
+	HOST void MemSet(uint8 Value)
+	{
+		if (MemoryType == EMemoryType::GPU)
+		{
+			CUDA_CHECKED_CALL cudaMemset(GetData(), Value, sizeof(TElementType) * Num());
+		}
+		else
+		{
+			std::memset(GetData(), Value, sizeof(TElementType) * Num());
+		}
+	}
 
     HOST void Free()
     {
 		FMemory::Free(ArrayData);
+		ArrayData = nullptr;
+		ArraySize = 0;
+	}
+    HOST void Reset()
+    {
 		ArrayData = nullptr;
 		ArraySize = 0;
 	}
@@ -136,6 +172,9 @@ public:
 protected:
 	TElementType* RESTRICT ArrayData = nullptr;
 	TSize ArraySize = 0;
+
+	template<typename, EMemoryType, typename>
+	friend struct TStaticArray;
 };
 
 template<typename TElementType, EMemoryType MemoryType, typename TSize = uint64>

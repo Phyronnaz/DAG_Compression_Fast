@@ -1,7 +1,7 @@
 #pragma once
 
 #define ENABLE_CHECKS 1
-#define DEBUG_GPU_ARRAYS 1
+#define DEBUG_GPU_ARRAYS ENABLE_CHECKS
 #define ENABLE_FORCEINLINE 0
 #define ENABLE_FLATTEN 0
 #define LEVELS 11

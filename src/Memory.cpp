@@ -25,6 +25,9 @@ inline const char* TypeToString(EMemoryType Type)
 FMemory::~FMemory()
 {
     check(this == &Singleton);
+	LOG("");
+	LOG("");
+	LOG("");
     for (auto& [_, Alloc] : Allocations)
     {
         LOG("%s (%s) leaked %fMB", Alloc.Name, TypeToString(Alloc.Type), Utils::ToMB(Alloc.Size));
@@ -149,6 +152,23 @@ void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, 
 	}
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	Allocations[Ptr] = { Name, Size, Type };
+}
+
+void FMemory::UnregisterCustomAllocImpl(void* Ptr)
+{
+	checkAlways(Allocations.find(Ptr) != Allocations.end());
+	auto& Alloc = Allocations[Ptr];
+	if (Alloc.Type == EMemoryType::GPU)
+	{
+		CUDA_CHECK_ERROR();
+		TotalAllocatedGpuMemory -= Alloc.Size;
+	}
+	else
+	{
+		check(Alloc.Type == EMemoryType::CPU);
+		TotalAllocatedCpuMemory -= Alloc.Size;
+	}
+	Allocations.erase(Ptr);
 }
 
 FMemory::Element FMemory::GetAllocInfoImpl(void* Ptr) const

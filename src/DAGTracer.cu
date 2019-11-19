@@ -1,69 +1,14 @@
 #include "DAGTracer.h"
 
-#pragma warning (disable: 4244)
-
-#define IN_ORDER_TRAVERSAL 1
-
-///////////////////////////////////////////////////////////////////////////////
-// Having a different child order than %000 means that we don't  process the 
-// children in order 0,2,3,4,5,6,7. For example, child_order == %001 means that 
-// we should do high z-values before low z values. 
-// It all boils down to that the order is obtained as 
-// child_number[child_order] = child_number[%000] ^ child_order
-///////////////////////////////////////////////////////////////////////////////
-HOST_DEVICE uint8 GetNextChild(uint8_t ChildOrder, uint8_t TestMask, uint8_t ChildMask)
-{
-	for (int32 Index = 0; Index < 8; Index++) 
-	{
-		const uint8 ChildInOrder = Index ^ ChildOrder;
-		const bool ChildExists = (ChildMask & (1 << ChildInOrder)) != 0;
-		const bool ChildIsTaken = (~TestMask & (1 << ChildInOrder)) != 0;
-		if (ChildExists && !ChildIsTaken) return ChildInOrder;
-	}
-	return 0;
-};
-
-///////////////////////////////////////////////////////////////////////////////
-// In the lookup table, we want to maintain locality as much as we can. 
-// The "child_order" is very likely to be the same (at least for primary rays)
-// between pixels. The "testmask" is probably more volatile than the 
-// "childmask", so do that last.
-///////////////////////////////////////////////////////////////////////////////
-uint8* CalculateNextChildLookupTable()
-{
-	uint8* LUT = new uint8[8 * 256 * 256];
-	for (uint32 ChildOrder = 0; ChildOrder < 8; ChildOrder++) 
-	{
-		for (uint32 ChildMask = 0; ChildMask < 256; ChildMask++) 
-		{
-			for (uint32 TestMask = 0; TestMask < 256; TestMask++) 
-			{
-				LUT[ChildOrder * (256 * 256) + ChildMask * 256 + TestMask] = GetNextChild(ChildOrder, TestMask, ChildMask);
-			}
-		}
-	}
-	return LUT; 
-}
-
-///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-
 FDAGTracer::FDAGTracer(uint32 Width, uint32 Height)
 	: Width(Width)
 	, Height(Height)
 {
-	uint8* NextChildLookupTable_CPU = CalculateNextChildLookupTable();
-	constexpr int32 LookupTableSize = 8 * 256 * 256 * sizeof(uint8); 
-	cudaMalloc(&NextChildLookupTable, LookupTableSize);
-	cudaMemcpy(NextChildLookupTable, NextChildLookupTable_CPU, LookupTableSize, cudaMemcpyHostToDevice);
-	delete[] NextChildLookupTable;
-	
 	glGenTextures(1, &ColorsImage);
 	glBindTexture(GL_TEXTURE_2D, ColorsImage);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (int32)Width, (int32)Height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glBindTexture(GL_TEXTURE_2D, 0);
 	ColorsBuffer.RegisterResource(ColorsImage);
 }
@@ -74,96 +19,7 @@ FDAGTracer::~FDAGTracer()
 	glDeleteTextures(1, &ColorsImage);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Function for intersecting a node, returning a bitmask with the 
-// childnodes that are intersected (ignoring whether they exist).
-///////////////////////////////////////////////////////////////////////////////
-inline __device__ uint8_t getIntersectionMask(const uint3 & stack_path, const uint32_t nof_levels,
-												const uint32_t stack_level, const float3 & ray_o,
-												const float3 & ray_d, const float3 &inv_ray_dir)
-{
-	///////////////////////////////////////////////////////////////////////////
-	// Node center is 0.5 * (aabb_min + aabb_max), which reduces to:
-	// NOTE: This is probably of by 0.5 right now...
-	///////////////////////////////////////////////////////////////////////////
-	uint32_t shift = nof_levels - (stack_level);
-	uint32_t node_radius = 1 << (shift - 1);
-	float3 node_center = make_float3(stack_path << shift) + make_float3(node_radius);
-
-	///////////////////////////////////////////////////////////////////////////
-	// Find the t-values at which the ray intersects the axis-planes of the 
-	// node: ray_o + tmid * ray_d = node_center   (component wise)
-	///////////////////////////////////////////////////////////////////////////
-	float3 tmid = (node_center - ray_o) * inv_ray_dir;
-
-	///////////////////////////////////////////////////////////////////////////
-	// Now find the t values at which the ray intersects the parent node,
-	// by calculating the t-range for traveling through a "slab" from the 
-	// center to each side of the node. 
-	///////////////////////////////////////////////////////////////////////////
-	float ray_tmin, ray_tmax;
-	{
-		float3 slab_radius = node_radius * abs(inv_ray_dir);
-		float3 tmin = tmid - slab_radius;
-		ray_tmin = fmax(max(tmin), 0.0f);
-		float3 tmax = tmid + slab_radius;
-		ray_tmax = min(tmax);
-	}
-
-	///////////////////////////////////////////////////////////////////////////
-	// Find the first child that is intersected. 
-	// NOTE: We assume that we WILL hit one child, since we assume that the 
-	//       parents bounding box is hit.
-	// NOTE: To safely get the correct node, we cannot use o+ray_tmin*d as the
-	//       intersection point, since this point might lie too close to an 
-	//       axis plane. Instead, we use the midpoint between max and min which
-	//       will lie in the correct node IF the ray only intersects one node. 
-	//       Otherwise, it will still lie in an intersected node, so there are 
-	//       no false positives from this. 
-	///////////////////////////////////////////////////////////////////////////
-	uint8_t intersection_mask = 0;
-	{
-		uint8_t first_hit_child;
-		float3 point_on_ray_segment = ray_o + 0.5f * (ray_tmin + ray_tmax) * ray_d;
-		first_hit_child = point_on_ray_segment.x >= node_center.x ? 4 : 0;
-		first_hit_child += point_on_ray_segment.y >= node_center.y ? 2 : 0;
-		first_hit_child += point_on_ray_segment.z >= node_center.z ? 1 : 0;
-		intersection_mask |= (1 << first_hit_child);
-	}
-
-	///////////////////////////////////////////////////////////////////////////
-	// We now check the points where the ray intersects the X, Y and Z plane. 
-	// If the intersection is within (ray_tmin, ray_tmax) then the intersection
-	// point implies that two voxels will be touched by the ray. We find out 
-	// which voxels to mask for an intersection point at +X, +Y by setting
-	// ALL voxels at +X and ALL voxels at +Y and ANDing these two masks. 
-	// 
-	// NOTE: When the intersection point is close enough to another axis plane, 
-	//       we must check both sides or we will get robustness issues. 
-	///////////////////////////////////////////////////////////////////////////
-	const float epsilon = 0.0001f;
-	float3 pointOnRaySegment0 = ray_o + tmid.x*ray_d;
-	uint32_t A = (abs(node_center.y - pointOnRaySegment0.y) < epsilon) ? (0xCC | 0x33) : ((pointOnRaySegment0.y >= node_center.y ? 0xCC : 0x33));
-	uint32_t B = (abs(node_center.z - pointOnRaySegment0.z) < epsilon) ? (0xAA | 0x55) : ((pointOnRaySegment0.z >= node_center.z ? 0xAA : 0x55));
-	intersection_mask |= (tmid.x < ray_tmin || tmid.x > ray_tmax) ? 0 : (A & B);
-	float3 pointOnRaySegment1 = ray_o + tmid.y*ray_d;
-	uint32_t C = (abs(node_center.x - pointOnRaySegment1.x) < epsilon) ? (0xF0 | 0x0F) : ((pointOnRaySegment1.x >= node_center.x ? 0xF0 : 0x0F));
-	uint32_t D = (abs(node_center.z - pointOnRaySegment1.z) < epsilon) ? (0xAA | 0x55) : ((pointOnRaySegment1.z >= node_center.z ? 0xAA : 0x55));
-	intersection_mask |= (tmid.y < ray_tmin || tmid.y > ray_tmax) ? 0 : (C & D);
-	float3 pointOnRaySegment2 = ray_o + tmid.z*ray_d;
-	uint32_t E = (abs(node_center.x - pointOnRaySegment2.x) < epsilon) ? (0xF0 | 0x0F) : ((pointOnRaySegment2.x >= node_center.x ? 0xF0 : 0x0F));
-	uint32_t F = (abs(node_center.y - pointOnRaySegment2.y) < epsilon) ? (0xCC | 0x33) : ((pointOnRaySegment2.y >= node_center.y ? 0xCC : 0x33));
-	intersection_mask |= (tmid.z < ray_tmin || tmid.z > ray_tmax) ? 0 : (E & F);
-
-	///////////////////////////////////////////////////////////////////////////
-	// Checking ray_tmin > ray_tmax is not generally safe (it happens sometimes
-	// due to float precision). But we still use this test to stop rays that do 
-	// not hit the root node. 
-	///////////////////////////////////////////////////////////////////////////	
-	return (stack_level == 0 && ray_tmin >= ray_tmax) ? 0 : intersection_mask;
-};
-
-HOST_DEVICE uint32 float3_to_rgb888(float3 c)
+DEVICE uint32 float3_to_rgb888(float3 c)
 {
 	float R = fmin(1.0f, fmax(0.0f, c.x));
 	float G = fmin(1.0f, fmax(0.0f, c.y));
@@ -173,173 +29,401 @@ HOST_DEVICE uint32 float3_to_rgb888(float3 c)
 		(uint32_t(B * 255.0f) << 16);
 }
 
-__global__ void
-primary_rays_kernel(
-	const FDAGTracer::TracePathsParams Params, 
-	const TStaticArray<uint32, EMemoryType::GPU> Dag, 
-	uint8_t* const d_next_child_lookup_table,
-	cudaSurfaceObject_t surface)
+// order: (shouldFlipX, shouldFlipY, shouldFlipZ)
+DEVICE uint8 next_child(uint8 order, uint8 mask)
 {
-	///////////////////////////////////////////////////////////////////////////
-	// Screen coordinates, discard outside
-	///////////////////////////////////////////////////////////////////////////
-	uint2 coord = make_uint2(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
-	if (coord.x >= Params.width || coord.y >= Params.height) return; 
-
-	///////////////////////////////////////////////////////////////////////////
-	// Calculate ray for pixel
-	///////////////////////////////////////////////////////////////////////////
-	const float3 ray_o = make_float3(Params.cameraPosition); 
-	const float3 ray_d = make_float3(normalize((Params.rayMin + coord.x * Params.rayDDx + coord.y * Params.rayDDy) - Params.cameraPosition)); 
-	float3 inv_ray_dir = 1.0f / ray_d;
-
-	///////////////////////////////////////////////////////////////////////////
-	// Stack
-	///////////////////////////////////////////////////////////////////////////
-	struct StackEntry{
-		uint32_t node_idx;
-		uint32_t masks; 
-	} stack[LEVELS];
-	uint3		stack_path = make_uint3(0,0,0);
-	int			stack_level = 0; 
-
-
-	///////////////////////////////////////////////////////////////////////////
-	// If intersecting the root node, push it on stack
-	///////////////////////////////////////////////////////////////////////////
-	stack[0].node_idx = 0; 
-	stack[0].masks = Dag[0] & 0xFF;
-	stack[0].masks |= (stack[0].masks & getIntersectionMask(stack_path, LEVELS, stack_level, ray_o, ray_d, inv_ray_dir)) << 8;
-
-	///////////////////////////////////////////////////////////////////////////
-	// Traverse until stack is empty (all root children are processed), or 
-	// until a leaf node is intersected. 
-	///////////////////////////////////////////////////////////////////////////
-	uint64_t current_leafmask; 
-	StackEntry curr_se = stack[0]; // Current stack entry
-
-	while (stack_level >= 0)
+	for (uint8 child = 0; child < 8; ++child)
 	{
-		///////////////////////////////////////////////////////////////////////
-		// If no children left to test, roll back stack
-		///////////////////////////////////////////////////////////////////////
-		if ((curr_se.masks & 0xFF00) == 0x0) {
-			stack_level = stack_level - 1;
-			stack_path = make_uint3(stack_path.x >> 1, stack_path.y >> 1, stack_path.z >> 1);
-			while ((stack[stack_level].masks & 0xFF00) == 0x0 && stack_level >= 0) {
-				stack_level = stack_level - 1;
-				stack_path = make_uint3(stack_path.x >> 1, stack_path.y >> 1, stack_path.z >> 1);
-			}
-			if (stack_level < 0) break;
-			curr_se = stack[stack_level];
-		}
+		uint8 childInOrder = child ^ order;
+		if (mask & (1u << childInOrder))
+			return childInOrder;
+	}
+	check(false);
+	return 0;
+}
 
-		///////////////////////////////////////////////////////////////////////
-		// Figure out which child to test next and create its path and 
-		// bounding box
-		///////////////////////////////////////////////////////////////////////
-#if IN_ORDER_TRAVERSAL
-		int child_order =	ray_d.x < 0 ? 4 : 0;
-		child_order		+=	ray_d.y < 0 ? 2 : 0;
-		child_order		+=	ray_d.z < 0 ? 1 : 0;
-		uint8_t next_child = d_next_child_lookup_table[child_order * (256 * 256) + (curr_se.masks & 0xFF) * 256 + (curr_se.masks >> 8)];
+struct FPath
+{
+public:
+	uint3 path;
+	
+	HOST_DEVICE FPath(uint3 path)
+		: path(path)
+	{
+	}
+	HOST_DEVICE FPath(uint32 x, uint32 y, uint32 z)
+		: path(make_uint3(x, y, z))
+	{
+	}
+
+	HOST_DEVICE void ascend(uint32 levels)
+	{
+		path.x >>= levels;
+		path.y >>= levels;
+		path.z >>= levels;
+	}
+	HOST_DEVICE void descend(uint8 child)
+	{
+		path.x <<= 1;
+		path.y <<= 1;
+		path.z <<= 1;
+		path.x |= (child & 0x4u) >> 2;
+		path.y |= (child & 0x2u) >> 1;
+		path.z |= (child & 0x1u) >> 0;
+	}
+
+	HOST_DEVICE float3 as_position(uint32 extraShift = 0) const
+	{
+		return make_float3(
+			float(path.x << extraShift),
+			float(path.y << extraShift),
+			float(path.z << extraShift)
+		);
+	}
+};
+
+struct Leaf
+{
+	uint32 low;
+	uint32 high;
+
+	HOST_DEVICE uint64 to_64() const
+	{
+		return (uint64(high) << 32) | uint64(low);
+	}
+
+	HOST_DEVICE uint8 get_first_child_mask() const
+	{
+#if defined(__CUDA_ARCH__)
+		const uint32 u0 = low | (low >> 1);
+		const uint32 u1 = u0 | (u0 >> 2);
+		const uint32 u2 = u1 | (u1 >> 4);
+		const uint32 t0 = u2 & 0x01010101u;
+
+		const uint32 v0 = high | (high >> 1);
+		const uint32 v1 = v0 | (v0 >> 2);
+		const uint32 v2 = v1 | (v1 << 4); // put into second nibble
+		const uint32 s0 = v2 & 0x10101010u;
+
+		uint32 s1;
+		asm(
+			"{\n\t"
+			"    .reg .u32 t0;\n\t"
+			"    mul.lo.u32 t0, %1, 0x1020408;\n\t" // multiply keeping the low part
+			"    mad.lo.u32 %0, %2, 0x1020408, t0;\n\t" // multiply keeping the low part and add
+			"}\n\t"
+			: "=r"(s1) : "r"(t0), "r"(s0)
+		);
+
+		return s1 >> 24;
 #else
-		uint8_t next_child = 31 - __clz(node_testmask);
+		const uint64 currentLeafMask = to_64();
+		return uint8(
+			((currentLeafMask & 0x00000000000000FF) == 0 ? 0 : 1 << 0) |
+			((currentLeafMask & 0x000000000000FF00) == 0 ? 0 : 1 << 1) |
+			((currentLeafMask & 0x0000000000FF0000) == 0 ? 0 : 1 << 2) |
+			((currentLeafMask & 0x00000000FF000000) == 0 ? 0 : 1 << 3) |
+			((currentLeafMask & 0x000000FF00000000) == 0 ? 0 : 1 << 4) |
+			((currentLeafMask & 0x0000FF0000000000) == 0 ? 0 : 1 << 5) |
+			((currentLeafMask & 0x00FF000000000000) == 0 ? 0 : 1 << 6) |
+			((currentLeafMask & 0xFF00000000000000) == 0 ? 0 : 1 << 7));
 #endif
+	}
+	HOST_DEVICE uint8 get_second_child_mask(uint8 firstChildIndex)
+	{
+		const uint8 shift = uint8((firstChildIndex & 3) * 8);
+		const uint32 leafMask = (firstChildIndex & 4) ? high : low;
+		return uint8(leafMask >> shift);
+	}
+};
 
-		curr_se.masks &= ~(1 << (next_child + 8));
+struct FDAG
+{
+	TStaticArray<uint32, EMemoryType::GPU> data;
+	
+    constexpr static uint32 levels = LEVELS;
 
-		///////////////////////////////////////////////////////////////////////
-		// Check this child for intersection with ray
-		///////////////////////////////////////////////////////////////////////
+	HOST_DEVICE constexpr uint32 leaf_level() const
+	{
+		return levels - 2;
+	}
+	HOST_DEVICE constexpr bool is_leaf(uint32 level) const
+	{
+		return level == leaf_level();
+	}
+
+	HOST_DEVICE bool is_valid() const
+	{
+		return data.IsValid();
+	}
+
+	HOST_DEVICE uint32 get_first_node_index() const
+	{
+		return 0;
+	}
+	HOST_DEVICE uint32 get_node(uint32 level, uint32 index) const
+	{
+		return data[index];
+	}
+	HOST_DEVICE uint32 get_child_index(uint32 level, uint32 index, uint8 childMask, uint8 child) const
+	{
+		return data[index + Utils::ChildOffset(childMask, child)];
+	}
+	HOST_DEVICE Leaf get_leaf(uint32 index) const
+	{
+		return { data[index], data[index + 1] };
+	}
+};
+
+template<bool isRoot>
+DEVICE uint8 compute_intersection_mask(
+	uint32 level,
+	const FPath& path,
+	const FDAG& dag,
+	const float3& rayOrigin,
+	const float3& rayDirection,
+	const float3& rayDirectionInverted)
+{
+	// Find node center = .5 * (boundsMin + boundsMax) + .5f
+	const uint32 shift = dag.levels - level;
+
+	const float radius = float(1u << (shift - 1));
+	const float3 center = make_float3(radius) + path.as_position(shift);
+
+	const float3 centerRelativeToRay = center - rayOrigin;
+
+	// Ray intersection with axis-aligned planes centered on the node
+	// => rayOrg + tmid * rayDir = center
+	const float3 tmid = centerRelativeToRay * rayDirectionInverted;
+
+	// t-values for where the ray intersects the slabs centered on the node
+	// and extending to the side of the node
+	float tmin, tmax;
+	{
+		const float3 slabRadius = radius * abs(rayDirectionInverted);
+		const float3 pmin = tmid - slabRadius;
+		tmin = max(max(pmin), .0f);
+
+		const float3 pmax = tmid + slabRadius;
+		tmax = min(pmax);
+	}
+
+	// Check if we actually hit the root node
+	// This test may not be entirely safe due to float precision issues.
+	// especially on lower levels. For the root node this seems OK, though.
+	if (isRoot && (tmin >= tmax))
+	{
+		return 0;
+	}
+
+	// Identify first child that is intersected
+	// NOTE: We assume that we WILL hit one child, since we assume that the
+	//       parents bounding box is hit.
+	// NOTE: To safely get the correct node, we cannot use o+ray_tmin*d as the
+	//       intersection point, since this point might lie too close to an
+	//       axis plane. Instead, we use the midpoint between max and min which
+	//       will lie in the correct node IF the ray only intersects one node.
+	//       Otherwise, it will still lie in an intersected node, so there are
+	//       no false positives from this.
+	uint8 intersectionMask = 0;
+	{
+		const float3 pointOnRay = (0.5f * (tmin + tmax)) * rayDirection;
+
+		uint8 const firstChild =
+			((pointOnRay.x >= centerRelativeToRay.x) ? 4 : 0) +
+			((pointOnRay.y >= centerRelativeToRay.y) ? 2 : 0) +
+			((pointOnRay.z >= centerRelativeToRay.z) ? 1 : 0);
+
+		intersectionMask |= (1u << firstChild);
+	}
+
+	// We now check the points where the ray intersects the X, Y and Z plane.
+	// If the intersection is within (ray_tmin, ray_tmax) then the intersection
+	// point implies that two voxels will be touched by the ray. We find out
+	// which voxels to mask for an intersection point at +X, +Y by setting
+	// ALL voxels at +X and ALL voxels at +Y and ANDing these two masks.
+	//
+	// NOTE: When the intersection point is close enough to another axis plane,
+	//       we must check both sides or we will get robustness issues.
+	const float epsilon = 1e-4f;
+
+	if (tmin <= tmid.x && tmid.x <= tmax)
+	{
+		const float3 pointOnRay = tmid.x * rayDirection;
+
+		uint8 A = 0;
+		if (pointOnRay.y >= centerRelativeToRay.y - epsilon) A |= 0xCC;
+		if (pointOnRay.y <= centerRelativeToRay.y + epsilon) A |= 0x33;
+
+		uint8 B = 0;
+		if (pointOnRay.z >= centerRelativeToRay.z - epsilon) B |= 0xAA;
+		if (pointOnRay.z <= centerRelativeToRay.z + epsilon) B |= 0x55;
+
+		intersectionMask |= A & B;
+	}
+	if (tmin <= tmid.y && tmid.y <= tmax)
+	{
+		const float3 pointOnRay = tmid.y * rayDirection;
+
+		uint8 C = 0;
+		if (pointOnRay.x >= centerRelativeToRay.x - epsilon) C |= 0xF0;
+		if (pointOnRay.x <= centerRelativeToRay.x + epsilon) C |= 0x0F;
+
+		uint8 D = 0;
+		if (pointOnRay.z >= centerRelativeToRay.z - epsilon) D |= 0xAA;
+		if (pointOnRay.z <= centerRelativeToRay.z + epsilon) D |= 0x55;
+
+		intersectionMask |= C & D;
+	}
+	if (tmin <= tmid.z && tmid.z <= tmax)
+	{
+		const float3 pointOnRay = tmid.z * rayDirection;
+
+		uint8 E = 0;
+		if (pointOnRay.x >= centerRelativeToRay.x - epsilon) E |= 0xF0;
+		if (pointOnRay.x <= centerRelativeToRay.x + epsilon) E |= 0x0F;
+
+
+		uint8 F = 0;
+		if (pointOnRay.y >= centerRelativeToRay.y - epsilon) F |= 0xCC;
+		if (pointOnRay.y <= centerRelativeToRay.y + epsilon) F |= 0x33;
+
+		intersectionMask |= E & F;
+	}
+
+	return intersectionMask;
+}
+
+struct StackEntry
+{
+	uint32 index;
+	uint8 childMask;
+	uint8 visitMask;
+};
+
+__global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, const FDAG dag, cudaSurfaceObject_t surface)
+{
+	// Target pixel coordinate
+	const uint2 pixel = make_uint2(
+		blockIdx.x * blockDim.x + threadIdx.x,
+		blockIdx.y * blockDim.y + threadIdx.y);
+
+	if (pixel.x >= traceParams.width || pixel.y >= traceParams.height)
+		return; // outside.
+
+	// Pre-calculate per-pixel data
+	const float3 rayOrigin = make_float3(traceParams.cameraPosition);
+	const float3 rayDirection = make_float3(normalize(traceParams.rayMin + pixel.x * traceParams.rayDDx + pixel.y * traceParams.rayDDy - traceParams.cameraPosition));
+
+	const float3 rayDirectionInverse = make_float3(make_double3(1. / rayDirection.x, 1. / rayDirection.y, 1. / rayDirection.z));
+	const uint8 rayChildOrder =
+		(rayDirection.x < 0.f ? 4 : 0) +
+		(rayDirection.y < 0.f ? 2 : 0) +
+		(rayDirection.z < 0.f ? 1 : 0);
+
+	// State
+	uint32 level = 0;
+	FPath path(0, 0, 0);
+
+	StackEntry stack[LEVELS];
+	StackEntry cache;
+	Leaf cachedLeaf; // needed to iterate on the last few levels
+
+	cache.index = dag.get_first_node_index();
+	cache.childMask = Utils::ChildMask(dag.get_node(0, cache.index));
+	cache.visitMask = cache.childMask & compute_intersection_mask<true>(0, path, dag, rayOrigin, rayDirection, rayDirectionInverse);
+
+	// Traverse DAG
+	for (;;)
+	{
+		// Ascend if there are no children left.
 		{
-			uint32_t node_offset = __popc((curr_se.masks & 0xFF) & ((1 << next_child) - 1)) + 1;
+			uint32 newLevel = level;
+			while (newLevel > 0 && !cache.visitMask)
+			{
+				newLevel--;
+				cache = stack[newLevel];
+			}
 
-			stack_path = make_uint3(
-				(stack_path.x << 1) | ((next_child & 0x4) >> 2),
-				(stack_path.y << 1) | ((next_child & 0x2) >> 1),
-				(stack_path.z << 1) | ((next_child & 0x1) >> 0));
-			stack_level += 1;
-
-			constexpr int32 nof_levels = LEVELS - 2;
-
-			///////////////////////////////////////////////////////////////////
-			// If we are at the final level where we have intersected a 1x1x1
-			// voxel. We are done. 
-			///////////////////////////////////////////////////////////////////
-			if (stack_level == nof_levels) {
+			if (newLevel == 0 && !cache.visitMask)
+			{
+				path = FPath(0, 0, 0);
 				break;
 			}
-			
-			///////////////////////////////////////////////////////////////////
-			// As I have intersected (and I am not finished) the current 
-			// stack entry must be saved to the stack
-			///////////////////////////////////////////////////////////////////
-			stack[stack_level - 1] = curr_se;
-			
-			///////////////////////////////////////////////////////////////////
-			// Now let's see if we are at the 2x2x2 level, in which case we
-			// need to pick a child-mask from previously fetched leaf-masks
-			// (node_idx does not matter until we are back)
-			///////////////////////////////////////////////////////////////////
-			if (stack_level == nof_levels - 1) {
-				curr_se.masks = (current_leafmask >> next_child * 8) & 0xFF;
-			}
-			///////////////////////////////////////////////////////////////////
-			// If the child level is the "leaf" level (containing 4x4x4 
-			// leafmasks), create a fake node for the next pass
-			///////////////////////////////////////////////////////////////////
-			else if (stack_level == nof_levels - 2) {
-				uint32_t leafmask_address = Dag[curr_se.node_idx + node_offset]; 
-				///////////////////////////////////////////////////////////////
-				// Shouldn't there be a faster way to get the 8 bit mask from 
-				// a 64 bit word... Without a bunch of compares? 
-				///////////////////////////////////////////////////////////////
-				uint32_t leafmask0 = Dag[leafmask_address];
-				uint32_t leafmask1 = Dag[leafmask_address + 1];
-				current_leafmask = uint64_t(leafmask1) << 32 | uint64_t(leafmask0); 
-				curr_se.masks =
-					((current_leafmask & 0x00000000000000FF) == 0 ? 0 : 1 << 0) |
-					((current_leafmask & 0x000000000000FF00) == 0 ? 0 : 1 << 1) |
-					((current_leafmask & 0x0000000000FF0000) == 0 ? 0 : 1 << 2) |
-					((current_leafmask & 0x00000000FF000000) == 0 ? 0 : 1 << 3) |
-					((current_leafmask & 0x000000FF00000000) == 0 ? 0 : 1 << 4) |
-					((current_leafmask & 0x0000FF0000000000) == 0 ? 0 : 1 << 5) |
-					((current_leafmask & 0x00FF000000000000) == 0 ? 0 : 1 << 6) |
-					((current_leafmask & 0xFF00000000000000) == 0 ? 0 : 1 << 7);
-			}
-			///////////////////////////////////////////////////////////////
-			// If we are at an internal node, push the child on the stack
-			///////////////////////////////////////////////////////////////
-			else {
-				curr_se.node_idx = Dag[curr_se.node_idx + node_offset]; 
-				curr_se.masks = Dag[curr_se.node_idx] & 0xFF;
-			}
 
-			curr_se.masks |= (curr_se.masks & getIntersectionMask(stack_path, nof_levels, stack_level, ray_o, ray_d, inv_ray_dir)) << 8;
-
+			path.ascend(level - newLevel);
+			level = newLevel;
 		}
-		///////////////////////////////////////////////////////////////////////
-		// If it does not intersect, do nothing. Proceed at same level.
-		///////////////////////////////////////////////////////////////////////
-	}
-	///////////////////////////////////////////////////////////////////////////
-	// Done, stack_path is closest voxel (or 0 if none found)
-	///////////////////////////////////////////////////////////////////////////
 
-	const auto path = stack_path;
-	
-	const float3 color = make_float3(path.x & 0xFF, path.y & 0xFF, path.z & 0xFF) / make_float3(0xFF);
-	surf2Dwrite(float3_to_rgb888(color), surface, coord.x  * sizeof(uint32), coord.y);
+		// Find next child in order by the current ray's direction
+		const uint8 nextChild = next_child(rayChildOrder, cache.visitMask);
+
+		// Mark it as handled
+		cache.visitMask &= ~(1u << nextChild);
+
+		// Intersect that child with the ray
+		{
+			path.descend(nextChild);
+			stack[level] = cache;
+			level++;
+
+			// If we're at the final level, we have intersected a single voxel.
+			if (level == dag.levels)
+			{
+				break;
+			}
+
+			// Are we in an internal node?
+			if (level < dag.leaf_level())
+			{
+				cache.index = dag.get_child_index(level - 1, cache.index, cache.childMask, nextChild);
+				cache.childMask = Utils::ChildMask(dag.get_node(level, cache.index));
+				cache.visitMask = cache.childMask &	compute_intersection_mask<false>(level, path, dag, rayOrigin, rayDirection, rayDirectionInverse);
+			}
+			else
+			{
+				/* The second-to-last and last levels are different: the data
+				 * of these two levels (2^3 voxels) are packed densely into a
+				 * single 64-bit word.
+				 */
+				uint8 childMask;
+
+				if (level == dag.leaf_level())
+				{
+					const uint32 addr = dag.get_child_index(level - 1, cache.index, cache.childMask, nextChild);
+					cachedLeaf = dag.get_leaf(addr);
+					childMask = cachedLeaf.get_first_child_mask();
+				}
+				else
+				{
+					childMask = cachedLeaf.get_second_child_mask(nextChild);
+				}
+
+				// No need to set the index for bottom nodes
+				cache.childMask = childMask;
+				cache.visitMask = cache.childMask & compute_intersection_mask<false>(level, path, dag, rayOrigin, rayDirection, rayDirectionInverse);
+			}
+		}
+	}
+
+	const auto p = path.path;
+
+	const float3 color = make_float3(p.x & 0xFF, p.y & 0xFF, p.z & 0xFF) / make_float3(0xFF);
+	surf2Dwrite(float3_to_rgb888(color), surface, pixel.x * sizeof(uint32), pixel.y);
 }
 
 void FDAGTracer::ResolvePaths(const TracePathsParams& Params, const TStaticArray<uint32, EMemoryType::GPU>& Dag)
 {
+	CUDA_CHECK_ERROR();
+	
 	ColorsBuffer.MapSurface();
+	
+	const dim3 block_dim = dim3(4, 64);
+	const dim3 grid_dim = dim3(Width / block_dim.x + 1, Height / block_dim.y + 1);
+	
+	trace_paths <<<grid_dim, block_dim>>> (Params, { Dag }, ColorsBuffer.CudaSurface);
 
-	dim3 block_dim = dim3(8, 32);
-	dim3 grid_dim = dim3(Width / block_dim.x + 1, Height / block_dim.y + 1);
-	primary_rays_kernel <<<grid_dim, block_dim >>>(Params, Dag, NextChildLookupTable, ColorsBuffer.CudaSurface);
-
+	CUDA_CHECK_ERROR();
+	
 	ColorsBuffer.UnmapSurface();
 }

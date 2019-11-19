@@ -83,7 +83,6 @@ public:
 	}
 
 private:
-	uint8* NextChildLookupTable = nullptr;
 	FCudaGLBuffer ColorsBuffer;
 	GLuint ColorsImage = 0;
 };

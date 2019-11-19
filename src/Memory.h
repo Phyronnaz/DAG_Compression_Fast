@@ -46,8 +46,13 @@ public:
     {
         checkAlways(Size % sizeof(T) == 0);
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
-		void* Copy = reinterpret_cast<void*>(Ptr);
-        Singleton.RegisterCustomAllocImpl(Copy, Name, Size, Type);
+        Singleton.RegisterCustomAllocImpl(reinterpret_cast<void*>(Ptr), Name, Size, Type);
+    }
+    template<typename T>
+    static void UnregisterCustomAlloc(T* Ptr)
+    {
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+        Singleton.UnregisterCustomAllocImpl(reinterpret_cast<void*>(Ptr));
     }
     template<typename T>
     static Element GetAllocInfo(const T* Ptr)
@@ -79,6 +84,7 @@ private:
     void FreeImpl(void* Ptr);
 	void ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData);
 	void RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, EMemoryType Type);
+	void UnregisterCustomAllocImpl(void* Ptr);
 	Element GetAllocInfoImpl(void* Ptr) const;
     std::string GetStatsStringImpl() const;
 

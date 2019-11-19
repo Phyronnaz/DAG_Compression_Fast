@@ -26,6 +26,7 @@ public:
 	}
 	void MapSurface()
 	{
+		check(CudaResource);
 		check(!CudaSurface);
 		CUDA_CHECKED_CALL cudaGraphicsMapResources(1, &CudaResource);
 		cudaArray_t cudaArray;
@@ -39,6 +40,7 @@ public:
 	}
 	void UnmapSurface()
 	{
+		check(CudaResource);
 		check(CudaSurface);
 		CUDA_CHECKED_CALL cudaDestroySurfaceObject(CudaSurface);
 		CUDA_CHECKED_CALL cudaGraphicsUnmapResources(1, &CudaResource);

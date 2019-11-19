@@ -946,6 +946,9 @@
     <ClInclude Include="src\DAGCompression.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\Serializer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="src\glm\detail\func_common.inl">
