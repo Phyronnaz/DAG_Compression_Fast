@@ -42,6 +42,7 @@ struct FPool
 	FPool()
 	{
 		FMemory::RegisterOutOfMemoryEvent([this]() { PrintStats(); });
+		FMemory::RegisterOutOfMemoryFallback([this]() { FreeUnused(); });
 	}
 
 	template<typename T>
@@ -211,7 +212,7 @@ template<typename T, typename F>
 inline auto TransformIterator(const T* Ptr, F Lambda)
 {
 	using TReturnType = decltype(Lambda(T()));
-	return cub::TransformInputIterator<const T, F, const TReturnType*>(Ptr, Lambda);
+	return cub::TransformInputIterator<const TReturnType, F, const T*>(Ptr, Lambda);
 }
 
 template<typename T>
@@ -324,7 +325,7 @@ inline void ReduceByKey(
 	const auto KeysIt = TransformIterator(Keys.GetData(), KeysTransform);
 	const auto ValuesIt = TransformIterator(Values.GetData(), ValuesTransform);
 
-	size_t TempStorageBytes;
+	size_t TempStorageBytes = 0;
 	CUDA_CHECKED_CALL cub::DeviceReduce::ReduceByKey(nullptr, TempStorageBytes, KeysIt, UniqueKeysOut.GetData(), ValuesIt, ReducedValuesOut.GetData(), NumRuns.ToGPU(), Reduce, Cast<int32>(Keys.Num()));
 	auto TempStorage = Pool.CreateArray<uint8>(TempStorageBytes);
 
@@ -353,7 +354,7 @@ inline void InclusiveSum(
 	
 	checkEqual(In.Num(), Out.Num());
 
-	size_t TempStorageBytes;
+	size_t TempStorageBytes = 0;
 	CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(nullptr, TempStorageBytes, In.GetData(), Out.GetData(), Cast<int32>(In.Num()));
 	auto TempStorage = Pool.CreateArray<uint8>(TempStorageBytes);
 
@@ -608,23 +609,21 @@ struct mgpu_context_t : mgpu::standard_context_t
 
 mgpu_context_t* mgpu_context = nullptr;
 
-template<typename TKey, typename TValue, typename F>
+template<typename TValueIt, typename TKey, typename TValue, typename F>
 inline void MergePairs(
 	FPool& Pool,
 	const TStaticArray<TKey, EMemoryType::GPU>& InKeysA,
-	const TStaticArray<TValue, EMemoryType::GPU>& InValuesA,
+	TValueIt InValuesA,
 	const TStaticArray<TKey, EMemoryType::GPU>& InKeysB,
-	const TStaticArray<TValue, EMemoryType::GPU>& InValuesB,
+	TValueIt InValuesB,
 	TStaticArray<TKey, EMemoryType::GPU>& OutKeys,
 	TStaticArray<TValue, EMemoryType::GPU>& OutValues,
 	F Comp)
 {
 	ZoneScoped;
 
-	checkEqual(InKeysA.Num(), InValuesA.Num());
-	checkEqual(InKeysB.Num(), InValuesB.Num());
 	checkEqual(OutKeys.Num(), OutValues.Num());
-	checkEqual(InKeysA.Num() + InKeysB.Num(), OutKeys.Num());
+	checkEqual(InKeysA.Num() + InKeysB.Num(), OutValues.Num());
 
 	if (!mgpu_context)
 	{
@@ -634,8 +633,8 @@ inline void MergePairs(
 
 	FCudaScopePerfRecorder PerfRecorder(__FUNCTION__, OutKeys.Num());
 	mgpu::merge(
-		InKeysA.GetData(), InValuesA.GetData(), Cast<int32>(InKeysA.Num()),
-		InKeysB.GetData(), InValuesB.GetData(), Cast<int32>(InKeysB.Num()),
+		InKeysA.GetData(), InValuesA, Cast<int32>(InKeysA.Num()),
+		InKeysB.GetData(), InValuesB, Cast<int32>(InKeysB.Num()),
 		OutKeys.GetData(), OutValues.GetData(),
 		Comp,
 		*mgpu_context);
@@ -816,7 +815,7 @@ void SortLevel(
 
 FGpuLevel ExtractLevel(
 	FPool& Pool,
-	TStaticArray<uint64, EMemoryType::GPU>& InOutFragments,
+	TStaticArray<FMortonCode, EMemoryType::GPU>& InOutFragments,
 	const TStaticArray<uint32, EMemoryType::GPU>& FragmentIndicesToChildrenIndices)
 {
 	ZoneScoped;
@@ -825,10 +824,10 @@ FGpuLevel ExtractLevel(
 	
 	const auto Fragments = InOutFragments;
 
-	const auto ParentsTransform = [] GPU_LAMBDA (uint64 Code) { return Code >> 3; };
-	const auto ChildIndicesTransform = [] GPU_LAMBDA (uint64 Code) { return uint64(1) << (Code & 0b111); };
+	const auto ParentsTransform = [] GPU_LAMBDA (FMortonCode Code) { return Code >> 3; };
+	const auto ChildIndicesTransform = [] GPU_LAMBDA (FMortonCode Code) { return uint64(1) << (Code & 0b111); };
 
-	auto Parents = Pool.CreateDynamicArray<uint64>(Fragments.Num());
+	auto Parents = Pool.CreateDynamicArray<FMortonCode>(Fragments.Num());
 	{
 		auto ChildMasks = Pool.CreateDynamicArray<uint8>(Fragments.Num());
 		ReduceByKey(
@@ -899,7 +898,7 @@ inline FPool& GetPool()
 	return Pool;
 }
 
-FCpuDag DAGCompression::CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& InFragments, const int32 Depth)
+FCpuDag DAGCompression::CreateDAG(const TStaticArray<FMortonCode, EMemoryType::GPU>& InFragments, const int32 Depth)
 {
 	ZoneScoped;
 	
@@ -919,19 +918,19 @@ FCpuDag DAGCompression::CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& 
 		Pool.NumFragments = InFragments.Num();
 	}
 
-	TStaticArray<uint64, EMemoryType::GPU> Fragments;
+	TStaticArray<FMortonCode, EMemoryType::GPU> Fragments;
 	{
-		auto SortedFragments = Pool.CreateArray<uint64>(InFragments.Num());
+		auto SortedFragments = Pool.CreateArray<FMortonCode>(InFragments.Num());
 		SortKeys(Pool, InFragments, SortedFragments, 3 * Depth);
 		
 #if !DEBUG_GPU_ARRAYS
 		{
-			void* Ptr = reinterpret_cast<void*>(const_cast<uint64*>(InFragments.GetData()));
+			void* Ptr = reinterpret_cast<void*>(const_cast<FMortonCode*>(InFragments.GetData()));
 			Pool.RegisterPtrInternal(Ptr, FMemory::GetAllocInfo(Ptr).Size);
 		}
 #endif
 		
-		auto UniqueFragments = Pool.CreateDynamicArray<uint64>(SortedFragments.Num());
+		auto UniqueFragments = Pool.CreateDynamicArray<FMortonCode>(SortedFragments.Num());
 		SelectUnique(Pool, SortedFragments, UniqueFragments);
 		
 		LogRemoved("Fragments", SortedFragments.Num(), UniqueFragments.Num());
@@ -943,11 +942,11 @@ FCpuDag DAGCompression::CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& 
 	TStaticArray<uint64, EMemoryType::GPU> Leaves;
 	{
 		// Use the last 6 bits to create the leaves
-		const auto ParentsTransform = [] GPU_LAMBDA (uint64 Code) { return Code >> 6; };
-		const auto LeavesTransform = [] GPU_LAMBDA (uint64 Code) { return uint64(1) << (Code & 0b111111); };
+		const auto ParentsTransform = [] GPU_LAMBDA (FMortonCode Code) { return Code >> 6; };
+		const auto LeavesTransform = [] GPU_LAMBDA (FMortonCode Code) { return uint64(1) << (Code & 0b111111); };
 
 		auto LocalLeaves = Pool.CreateDynamicArray<uint64>(Fragments.Num() / 2); // Should not have the / 2, but that way we can save quite a lot of memory
-		auto Parents = Pool.CreateDynamicArray<uint64>(Fragments.Num() / 2);
+		auto Parents = Pool.CreateDynamicArray<FMortonCode>(Fragments.Num() / 2);
 
 		ReduceByKey(
 			Pool,
@@ -997,7 +996,7 @@ FCpuDag DAGCompression::CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& 
 
 #if !DEBUG_GPU_ARRAYS
 	{
-		void* Ptr = reinterpret_cast<void*>(const_cast<uint64*>(InFragments.GetData()));
+		void* Ptr = reinterpret_cast<void*>(const_cast<FMortonCode*>(InFragments.GetData()));
 		Pool.RemovePtrInternal(Ptr);
 	}
 #endif
@@ -1007,8 +1006,8 @@ FCpuDag DAGCompression::CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& 
 
 uint32 Merge(
 	FPool& Pool,
-	const TStaticArray<uint64, EMemoryType::GPU>& ValuesA,
-	const TStaticArray<uint64, EMemoryType::GPU>& ValuesB,
+	const TStaticArray<uint64, EMemoryType::GPU>& KeysA,
+	const TStaticArray<uint64, EMemoryType::GPU>& KeysB,
 	TStaticArray<uint32, EMemoryType::GPU>& OutIndicesAToMergedIndices,
 	TStaticArray<uint32, EMemoryType::GPU>& OutIndicesBToMergedIndices)
 {
@@ -1017,52 +1016,54 @@ uint32 Merge(
 	check(!OutIndicesAToMergedIndices.IsValid());
 	check(!OutIndicesBToMergedIndices.IsValid());
 	
-	auto ValuesAB = Pool.CreateArray<uint64>(ValuesA.Num() + ValuesB.Num());
-	auto KeysAB = Pool.CreateArray<uint32>(ValuesA.Num() + ValuesB.Num());
+	auto KeysAB = Pool.CreateArray<uint64>(KeysA.Num() + KeysB.Num());
+	auto Permutation = Pool.CreateArray<uint32>(KeysA.Num() + KeysB.Num());
 	{
-		auto KeysA = Pool.CreateArray<uint32>(ValuesA.Num());
-		auto KeysB = Pool.CreateArray<uint32>(ValuesB.Num());
-
-		MakeSequence(KeysA, 0u);
-		MakeSequence(KeysB, 1u << 31);
-
-		MergePairs(Pool, KeysA, ValuesA, KeysB, ValuesB, KeysAB, ValuesAB, thrust::less<uint64>());
-
-		Pool.FreeArray(KeysA);
-		Pool.FreeArray(KeysB);
+		MergePairs(
+			Pool,
+			KeysA,
+			thrust::make_counting_iterator<uint32>(0u),
+			KeysB,
+			thrust::make_counting_iterator<uint32>(1u << 31),
+			KeysAB,
+			Permutation,
+			thrust::less<uint64>());
 	}
-		
-	auto UniqueSum = Pool.CreateArray<uint32>(ValuesA.Num() + ValuesB.Num());
+
+	auto UniqueSum = Pool.CreateArray<uint32>(KeysA.Num() + KeysB.Num());
 	{
-		auto UniqueFlags = Pool.CreateArray<uint32>(ValuesA.Num() + ValuesB.Num());
-		AdjacentDifference(ValuesAB, UniqueFlags, thrust::not_equal_to<uint64>(), 0u);
+		auto UniqueFlags = Pool.CreateArray<uint32>(KeysA.Num() + KeysB.Num());
+		AdjacentDifference(KeysAB, UniqueFlags, thrust::not_equal_to<uint64>(), 0u);
 		InclusiveSum(Pool, UniqueFlags, UniqueSum);
 		Pool.FreeArray(UniqueFlags);
 	}
-	Pool.FreeArray(ValuesAB);
+	Pool.FreeArray(KeysAB);
 
 	const uint32 NumUniques = GetElement(UniqueSum, UniqueSum.Num() - 1) + 1;
 
-	OutIndicesAToMergedIndices = Pool.CreateArray<uint32>(ValuesA.Num());
-	OutIndicesBToMergedIndices = Pool.CreateArray<uint32>(ValuesB.Num());
+	OutIndicesAToMergedIndices = Pool.CreateArray<uint32>(KeysA.Num());
+	OutIndicesBToMergedIndices = Pool.CreateArray<uint32>(KeysB.Num());
 	ScatterIf(
 		UniqueSum, 
-		[=] GPU_LAMBDA (uint64 Index) { return KeysAB[Index]; },
+		[=] GPU_LAMBDA (uint64 Index) { return Permutation[Index]; },
 		OutIndicesAToMergedIndices.GetData(),
-		[=] GPU_LAMBDA (uint64 Index) { return !Utils::HasFlag(KeysAB[Index]); });
+		[=] GPU_LAMBDA (uint64 Index) { return !Utils::HasFlag(Permutation[Index]); });
 	ScatterIf(
 		UniqueSum, 
-		[=] GPU_LAMBDA (uint64 Index) { return Utils::ClearFlag(KeysAB[Index]); },
+		[=] GPU_LAMBDA (uint64 Index) { return Utils::ClearFlag(Permutation[Index]); },
 		OutIndicesBToMergedIndices.GetData(),
-		[=] GPU_LAMBDA (uint64 Index) { return Utils::HasFlag(KeysAB[Index]); });
+		[=] GPU_LAMBDA (uint64 Index) { return Utils::HasFlag(Permutation[Index]); });
 
 	Pool.FreeArray(UniqueSum);
-	Pool.FreeArray(KeysAB);
+	Pool.FreeArray(Permutation);
 
 	return NumUniques;
 }
 
-inline FCpuDag MergeDAGs(FPool& Pool, FCpuDag A, FCpuDag B)
+inline FCpuDag MergeDAGs(
+	FPool& Pool,
+	FCpuDag A,
+	FCpuDag B)
 {
 	ZoneScoped;
 	
@@ -1230,6 +1231,7 @@ FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 	}
 
 	FPool& Pool = GetPool();
+	Pool.FreeAll();
 
 	int32 PassIndex = 0;
 	while (CpuDags.size() > 1)

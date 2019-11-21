@@ -283,11 +283,6 @@ int main()
 			for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
 			{
 				ZoneScopedf("Sub Dag %d", SubDagIndex);
-				LOG_DEBUG("");
-				LOG_DEBUG("############################################################");
-				LOG_DEBUG("Sub Dag %u/%u", SubDagIndex + 1, uint32(AABBs.size()));
-				LOG_DEBUG("############################################################");
-				LOG_DEBUG("");
 
 				const double GenerateFragmentsStartTime = Utils::Seconds();
 				const auto Fragments = Voxelizer.GenerateFragments(AABBs[SubDagIndex]);
@@ -296,22 +291,21 @@ int main()
 				TotalFragments += Fragments.Num();
 				LOG_DEBUG("GenerateFragments took %fs", GenerateFragmentsElapsed);
 
-				LOG_DEBUG("%llu fragments", Fragments.Num());
-
 				const double CreateDAGStartTime = Utils::Seconds();
 				auto CpuDag = DAGCompression::CreateDAG(Fragments, SUBDAG_LEVELS);
 				const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
 				TotalCreateDAGTime += CreateDAGElapsed;
 				LOG_DEBUG("CreateDAG took %fs", CreateDAGElapsed);
 
+				LOG("Sub Dag %u/%u %" PRIu64 " fragments", SubDagIndex + 1, uint32(AABBs.size()), Fragments.Num());
 				DagsToMerge.push_back(CpuDag);
 			}}
 
-		LOG_DEBUG("");
-		LOG_DEBUG("############################################################");
-		LOG_DEBUG("Merging");
-		LOG_DEBUG("############################################################");
-		LOG_DEBUG("");
+		LOG("");
+		LOG("############################################################");
+		LOG("Merging");
+		LOG("############################################################");
+		LOG("");
 
 		const double MergeDagsStartTime = Utils::Seconds();
 		FCpuDag MergedDag;

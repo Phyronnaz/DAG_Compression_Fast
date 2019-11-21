@@ -41,7 +41,7 @@ struct FCpuDag
 
 namespace DAGCompression
 {
-	FCpuDag CreateDAG(const TStaticArray<uint64, EMemoryType::GPU>& Fragments, int32 Depth);
+	FCpuDag CreateDAG(const TStaticArray<FMortonCode, EMemoryType::GPU>& Fragments, int32 Depth);
 	FCpuDag MergeDAGs(std::vector<FCpuDag>&& CpuDags);
 	TStaticArray<uint32, EMemoryType::GPU> CreateFinalDAG(FCpuDag&& CpuDag);
 	void FreeAll();

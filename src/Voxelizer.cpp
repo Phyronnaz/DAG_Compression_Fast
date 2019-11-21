@@ -13,7 +13,7 @@
 
 #define FRAMEBUFFER_PROGRAMMABLE_SAMPLE_LOCATIONS_NV 0x9342
 
-std::string GetFileContents(const char* Filename)
+static std::string GetFileContents(const char* Filename)
 {
 	std::ifstream In(Filename, std::ios::in | std::ios::binary);
 	checkAlways(In);
@@ -27,10 +27,18 @@ std::string GetFileContents(const char* Filename)
 	return (Contents);
 }
 
-GLuint CompileShader(const GLenum ShaderType, const GLchar* Source)
+static std::string AddDefine(const std::string& File, const std::string& Define, const std::string& Value)
 {
+	return "#define " + Define + " " + Value + "\n" + File;
+}
+
+static GLuint CompileShader(const GLenum ShaderType, const std::string& Source)
+{
+	const auto ShaderCode = "#version 450 compatibility\n" + Source;
+	const GLchar* ShaderCodePtr = ShaderCode.c_str();
+	
 	const GLuint ShaderId = glCreateShader(ShaderType);
-	glShaderSource(ShaderId, 1, &Source, nullptr);
+	glShaderSource(ShaderId, 1, &ShaderCodePtr, nullptr);
 	glCompileShader(ShaderId);
 
 	GLint BufferLength = 0;
@@ -39,7 +47,7 @@ GLuint CompileShader(const GLenum ShaderType, const GLchar* Source)
 	{
 		std::vector<GLchar> LogString(std::size_t(BufferLength) + 1);
 		glGetShaderInfoLog(ShaderId, BufferLength, nullptr, LogString.data());
-		LOG("Log found for '%s.':\n%s", Source, LogString.data());
+		LOG("Log found for '%s.':\n%s", ShaderCodePtr, LogString.data());
 		checkAlways(false);
 	}
 
@@ -50,7 +58,7 @@ GLuint CompileShader(const GLenum ShaderType, const GLchar* Source)
 	return ShaderId;
 }
 
-GLuint LinkShaders(GLuint VertexShader, GLuint FragmentShader, GLuint GeometryShader)
+static GLuint LinkShaders(GLuint VertexShader, GLuint FragmentShader, GLuint GeometryShader)
 {
 	const GLuint ProgramId = glCreateProgram();
 	glAttachShader(ProgramId, VertexShader);
@@ -82,7 +90,7 @@ enum class EAxis
 	Z
 };
 
-inline FOrthographicView GetCamera(const FAABB& AABB, const EAxis Axis)
+static FOrthographicView GetCamera(const FAABB& AABB, const EAxis Axis)
 {
 	const glm::vec3 Position =
 		Axis == EAxis::X
@@ -193,11 +201,11 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	, NodesToRender(GetNodesToRender(Scene))
 {
 	ZoneScoped;
-	
+
 	check(SubGridSize > 0);
-	const GLuint VertexShader = CompileShader(GL_VERTEX_SHADER, GetFileContents("Shaders/VertexShader.glsl").c_str());
-	const GLuint FragmentShader = CompileShader(GL_FRAGMENT_SHADER, GetFileContents("Shaders/FragmentShader.glsl").c_str());
-	const GLuint GeometryShader = CompileShader(GL_GEOMETRY_SHADER, GetFileContents("Shaders/GeometryShader.glsl").c_str());
+	const GLuint VertexShader = CompileShader(GL_VERTEX_SHADER, GetFileContents("Shaders/VertexShader.glsl"));
+	const GLuint FragmentShader = CompileShader(GL_FRAGMENT_SHADER, AddDefine(GetFileContents("Shaders/FragmentShader.glsl"), "MORTON_BITS", sizeof(FMortonCode) == 4 ? "32" : "64"));
+	const GLuint GeometryShader = CompileShader(GL_GEOMETRY_SHADER, GetFileContents("Shaders/GeometryShader.glsl"));
 	VoxelizeShader = LinkShaders(VertexShader, FragmentShader, GeometryShader);
 
 	// Atomic counter.
@@ -212,7 +220,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	// Data buffer (pos).
 	glGenBuffers(1, &PositionSSBO);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, PositionSSBO);
-	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64), nullptr, GL_STATIC_DRAW);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(FMortonCode), nullptr, GL_STATIC_DRAW);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
 	// Dummy framebuffer.
@@ -227,7 +235,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	CUDA_CHECKED_CALL cudaGraphicsMapResources(1, &CudaPositionResource);
 	CUDA_CHECKED_CALL cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&Positions), &NumBytes, CudaPositionResource);
 
-	FMemory::RegisterCustomAlloc(Positions, "Fragments", TexDim * sizeof(uint64), EMemoryType::GPU);
+	FMemory::RegisterCustomAlloc(Positions, "Fragments", TexDim * sizeof(FMortonCode), EMemoryType::GPU);
 }
 
 FVoxelizer::~FVoxelizer()
@@ -243,7 +251,7 @@ FVoxelizer::~FVoxelizer()
 	FMemory::UnregisterCustomAlloc(Positions);
 }
 
-TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB) const
+TStaticArray<FMortonCode, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 {
 	ZoneScoped;
 	

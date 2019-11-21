@@ -1,5 +1,3 @@
-#version 450 compatibility
-
 #extension GL_ARB_shader_atomic_counters : enable
 #extension GL_NV_gpu_shader5 : enable
 #extension GL_ARB_gpu_shader_int64 : enable
@@ -152,8 +150,12 @@ in vec3 fs_normal;
 in vec3 barycoords;
 flat in vec3 fs_gnormal;
 
+#define JOIN_IMPL(A, B) A ## B
+#define JOIN(A, B) JOIN_IMPL(A, B)
+#define MORTON_TYPE JOIN(uint, JOIN(MORTON_BITS, _t))
+
 layout(binding = 0) uniform atomic_uint frag_count;
-layout(binding = 0, std430) restrict coherent buffer item_buffer_block0 { uint64_t position_ssbo[]; };
+layout(binding = 0, std430) restrict coherent buffer item_buffer_block0 { MORTON_TYPE position_ssbo[]; };
 
 uniform int grid_dim;
 layout(binding = 0) uniform sampler2D u_BaseColorSampler;
@@ -204,7 +206,7 @@ void main()
 				subvoxel_coord2.xyz = subvoxel_coord2.yxz;
 			}
 			uint32_t idx = atomicCounterIncrement(frag_count);
-			position_ssbo[idx] = mortonEncode64(subvoxel_coord2.x, subvoxel_coord2.y, subvoxel_coord2.z);
+			position_ssbo[idx] = JOIN(mortonEncode, MORTON_BITS)(subvoxel_coord2.x, subvoxel_coord2.y, subvoxel_coord2.z);
 		}
 	}
 }

@@ -4,10 +4,10 @@
 #define DEBUG_GPU_ARRAYS 0
 #define ENABLE_FORCEINLINE !ENABLE_CHECKS
 #define ENABLE_FLATTEN 0
-#define LEVELS 17
+#define LEVELS 15
 
 #define SUBDAG_LEVELS 12
-#define FRAGMENTS_MEMORY_IN_MILLIONS 160 // Number of uint64
+#define FRAGMENTS_MEMORY_IN_MILLIONS 160
 
 #define PRINT_DEBUG_INFO 0
 
@@ -244,3 +244,7 @@ HOST_DEVICE T Cast(U Value)
 		ZoneName(__String, __Size); \
 	}
 #endif
+
+using FMortonCode = uint64;
+
+static_assert(3 * SUBDAG_LEVELS <= sizeof(FMortonCode) * 8, "");
