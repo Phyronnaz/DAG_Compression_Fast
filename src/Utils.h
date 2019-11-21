@@ -177,6 +177,12 @@ namespace Utils
 		return 1 + (Dividend - 1) / Divisor;
 	}
 
+	template<typename T>
+	HOST_DEVICE constexpr bool IsPowerOf2(T Value)
+	{
+		return (Value & (Value - 1)) == 0;
+	}
+
     HOST double Seconds()
     {
         static auto Start = std::chrono::high_resolution_clock::now();

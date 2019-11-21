@@ -80,12 +80,14 @@ inline FAABB MakeSquareAABB(const FAABB& AABB)
 	return { Centre - NewHalfSize, Centre + NewHalfSize };
 }
 
+// Split in morton order
 inline std::vector<FAABB> SplitAABB(const std::vector<FAABB>& Parent)
 {
 	std::vector<FAABB> Return;
 	Return.reserve(Parent.size() * 8);
 
-	for (const auto& AABB : Parent) {
+	for (const auto& AABB : Parent) 
+	{
 		const auto Centre = AABB.GetCentre();
 		const auto HalfSize = AABB.GetHalfSize();
 

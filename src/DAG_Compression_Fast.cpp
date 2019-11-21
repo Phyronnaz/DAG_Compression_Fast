@@ -254,46 +254,106 @@ int main()
 		const auto Scene = Loader.GetScene();
 		LOG("Loading Scene took %fs", Utils::Seconds() - LoadSceneStartTime);
 		AABB = MakeSquareAABB(Scene.AABB);
-
+		
+		LOG("");
+		LOG("############################################################");
 		LOG("Depth = %d (%d)", LEVELS, 1 << LEVELS);
+		LOG("ENABLE_CHECKS = %d", ENABLE_CHECKS);
+		LOG("DEBUG_GPU_ARRAYS = %d", DEBUG_GPU_ARRAYS);
+		LOG("############################################################");
+		LOG("");
 
 		const int32 NumberOfSplits = LEVELS - SUBDAG_LEVELS;
 		std::vector<FAABB> AABBs = { AABB };
 		for (int32 Index = 0; Index < NumberOfSplits; Index++) AABBs = SplitAABB(AABBs);
-		check(AABBs.size() == (1 << (3 * NumberOfSplits)));
-
-		FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
-
+		checkEqual(AABBs.size(), (1 << (3 * NumberOfSplits)));
+		
+		const double GlobalStartTime = Utils::Seconds();
+		FrameMark;
+		
 		double TotalGenerateFragmentsTime = 0;
 		double TotalCreateDAGTime = 0;
+		uint64 TotalFragments = 0;
 
-		for (auto& LocalAABB : AABBs)
+		std::vector<FCpuDag> DagsToMerge;
 		{
-			const double GenerateFragmentsStartTime = Utils::Seconds();
-			const auto Fragments = Voxelizer.GenerateFragments(LocalAABB);
-			const double GenerateFragmentsElapsed = Utils::Seconds() - GenerateFragmentsStartTime;
-			TotalGenerateFragmentsTime += GenerateFragmentsElapsed;
-			LOG("GenerateFragments took %fs", GenerateFragmentsElapsed);
+			ZoneScopedN("Create Dags");
+			
+			FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
+			for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
+			{
+				ZoneScopedf("Sub Dag %d", SubDagIndex);
+				LOG_DEBUG("");
+				LOG_DEBUG("############################################################");
+				LOG_DEBUG("Sub Dag %u/%u", SubDagIndex + 1, uint32(AABBs.size()));
+				LOG_DEBUG("############################################################");
+				LOG_DEBUG("");
 
-			LOG("%llu fragments", Fragments.Num());
+				const double GenerateFragmentsStartTime = Utils::Seconds();
+				const auto Fragments = Voxelizer.GenerateFragments(AABBs[SubDagIndex]);
+				const double GenerateFragmentsElapsed = Utils::Seconds() - GenerateFragmentsStartTime;
+				TotalGenerateFragmentsTime += GenerateFragmentsElapsed;
+				TotalFragments += Fragments.Num();
+				LOG_DEBUG("GenerateFragments took %fs", GenerateFragmentsElapsed);
 
-			const double CreateDAGStartTime = Utils::Seconds();
-			auto CpuDag = DAGCompression::CreateDAG(Fragments, SUBDAG_LEVELS);
-			const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
-			TotalCreateDAGTime += CreateDAGElapsed;
-			LOG("CreateDAG took %fs", CreateDAGElapsed);
+				LOG_DEBUG("%llu fragments", Fragments.Num());
 
-			const double CreateFinalDAGStartTime = Utils::Seconds();
-			Dag = DAGCompression::CreateFinalDAG(std::move(CpuDag));
-			const double CreateFinalDAGElapsed = Utils::Seconds() - CreateFinalDAGStartTime;
-			LOG("CreateFinalDAG took %fs", CreateFinalDAGElapsed);
+				const double CreateDAGStartTime = Utils::Seconds();
+				auto CpuDag = DAGCompression::CreateDAG(Fragments, SUBDAG_LEVELS);
+				const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
+				TotalCreateDAGTime += CreateDAGElapsed;
+				LOG_DEBUG("CreateDAG took %fs", CreateDAGElapsed);
+
+				DagsToMerge.push_back(CpuDag);
+			}}
+
+		LOG_DEBUG("");
+		LOG_DEBUG("############################################################");
+		LOG_DEBUG("Merging");
+		LOG_DEBUG("############################################################");
+		LOG_DEBUG("");
+
+		const double MergeDagsStartTime = Utils::Seconds();
+		FCpuDag MergedDag;
+		if (DagsToMerge.size() == 1)
+		{
+			MergedDag = DagsToMerge[0];
 		}
+		else 
+		{
+			MergedDag = DAGCompression::MergeDAGs(std::move(DagsToMerge));
+		}
+		const double MergeDagsElapsed = Utils::Seconds() - MergeDagsStartTime;
+		LOG_DEBUG("MergeDags took %fs", MergeDagsElapsed);
 
-		const double FreeAllStartTime = Utils::Seconds();
-		DAGCompression::FreeAll();
-		const double FreeAllElapsed = Utils::Seconds() - FreeAllStartTime;
-		LOG("FreeAll took %fs", FreeAllElapsed);
+		const double CreateFinalDAGStartTime = Utils::Seconds();
+		Dag = DAGCompression::CreateFinalDAG(std::move(MergedDag));
+		const double CreateFinalDAGElapsed = Utils::Seconds() - CreateFinalDAGStartTime;
+		LOG_DEBUG("CreateFinalDAG took %fs", CreateFinalDAGElapsed);
+
+		const double TotalElapsed = Utils::Seconds() - GlobalStartTime;
+		FrameMark;
+
+		LOG("");
+		LOG("############################################################");
+		LOG("Total elapsed: %fs", TotalElapsed);
+		LOG("Total GenerateFragments: %fs", TotalGenerateFragmentsTime);
+		LOG("Total CreateDAG: %fs", TotalCreateDAGTime);
+		LOG("MergeDags: %fs", MergeDagsElapsed);
+		LOG("CreateFinalDAG: %fs", CreateFinalDAGElapsed);
+		LOG("Total Fragments: %" PRIu64, TotalFragments);
+		LOG("Throughput: %f BV/s", TotalFragments / TotalElapsed / 1.e9);
+		LOG("############################################################");
+		LOG("");
+
+		{
+			const double FreeAllStartTime = Utils::Seconds();
+			DAGCompression::FreeAll();
+			const double FreeAllElapsed = Utils::Seconds() - FreeAllStartTime;
+			LOG("FreeAll took %fs", FreeAllElapsed);
+		}
 		
+		LOG("Peak CPU memory usage: %f MB", Utils::ToMB(FMemory::GetCpuMaxAllocatedMemory()));
 		LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
 
 		std::cout << FMemory::GetStatsString();

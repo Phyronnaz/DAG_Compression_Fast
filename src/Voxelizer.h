@@ -11,7 +11,7 @@ class FVoxelizer
 public:
 	const int32 SubGridSize;
 	const FScene& Scene;
-	static constexpr int32 TexDim = FRAGMENTS_MEMORY_IN_MB * 1024 * 1024;
+	static constexpr int32 TexDim = FRAGMENTS_MEMORY_IN_MILLIONS * 1024 * 1024;
 
 private:
 	const std::vector<std::size_t> NodesToRender;

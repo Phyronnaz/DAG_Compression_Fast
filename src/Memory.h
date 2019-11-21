@@ -3,6 +3,7 @@
 #include "Core.h"
 #include <unordered_map>
 #include <mutex>
+#include <functional>
 
 enum class EMemoryType
 {
@@ -68,6 +69,16 @@ public:
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
         return Singleton.GetStatsStringImpl();
     }
+	static void RegisterOutOfMemoryEvent(std::function<void()>&& Callback)
+    {
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		Singleton.OnOutOfMemoryEvents.push_back(std::move(Callback));
+    }
+	static void RegisterOutOfMemoryFallback(std::function<void()>&& Callback)
+    {
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		Singleton.OnOutOfMemoryFallbacks.push_back(std::move(Callback));
+    }
 
 public:
     inline static uint64 GetCpuAllocatedMemory()
@@ -109,6 +120,8 @@ private:
     size_t MaxTotalAllocatedGpuMemory = 0;
     size_t MaxTotalAllocatedCpuMemory = 0;
     std::unordered_map<void*, Element> Allocations;
+	std::vector<std::function<void()>> OnOutOfMemoryFallbacks;
+	std::vector<std::function<void()>> OnOutOfMemoryEvents;
 
     static FMemory Singleton;
 };

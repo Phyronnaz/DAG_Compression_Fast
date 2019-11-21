@@ -7,9 +7,8 @@
 template<typename TElementType, EMemoryType MemoryType, typename TSize = uint64>
 struct TStaticArray
 {
-public:
 	TStaticArray() = default;
-	TStaticArray(TElementType* RESTRICT Data, TSize Size)
+	HOST_DEVICE TStaticArray(TElementType* RESTRICT Data, TSize Size)
 		: ArrayData(Data)
 		, ArraySize(Size)
 	{
@@ -19,9 +18,43 @@ public:
 		, ArraySize(Size)
 	{
 	}
-	explicit TStaticArray(decltype(nullptr))
+	TStaticArray(const char* Name, std::initializer_list<TElementType> List)
+		: TStaticArray(Name, List.size())
+	{
+		static_assert(MemoryType == EMemoryType::CPU, "");
+		std::memcpy(ArrayData, List.begin(), SizeInBytes());
+	}
+	HOST_DEVICE explicit TStaticArray(decltype(nullptr))
 		: TStaticArray(nullptr, 0)
 	{
+	}
+
+	HOST_DEVICE TStaticArray(const TStaticArray& Other)
+		: ArrayData(Other.ArrayData),
+		  ArraySize(Other.ArraySize)
+	{
+	}
+	HOST_DEVICE TStaticArray(TStaticArray&& Other) noexcept
+		: ArrayData(Other.ArrayData),
+		  ArraySize(Other.ArraySize)
+	{
+		Other.Reset();
+	}
+
+	HOST_DEVICE TStaticArray& operator=(const TStaticArray& Other)
+	{
+		check(!IsValid());
+		ArrayData = Other.ArrayData;
+		ArraySize = Other.ArraySize;
+		return *this;
+	}
+	HOST_DEVICE TStaticArray& operator=(TStaticArray&& Other) noexcept
+	{
+		check(!IsValid());
+		ArrayData = Other.ArrayData;
+		ArraySize = Other.ArraySize;
+		Other.Reset();
+		return *this;
 	}
 
 	template<typename TOther>
@@ -33,14 +66,6 @@ public:
 		Result.ArrayData = reinterpret_cast<TOther*>(ArrayData);
 		Result.ArraySize = (ArraySize * sizeof(TElementType)) / sizeof(TOther);
 		return Result;
-	}
-
-	HOST TStaticArray<TElementType, MemoryType, TSize>& operator=(const TStaticArray<TElementType, MemoryType, TSize>& Other)
-	{
-		check(!IsValid());
-		ArrayData = Other.ArrayData;
-		ArraySize = Other.ArraySize;
-		return *this;
 	}
 
 	HOST TStaticArray<TElementType, EMemoryType::GPU, TSize> CreateGPU() const
@@ -70,7 +95,7 @@ public:
 		
 		static_assert(MemoryType == EMemoryType::CPU, "");
         check(GpuArray.Num() == Num());
-        CUDA_CHECKED_CALL cudaMemcpy(GpuArray.GetData(), GetData(), Num() * sizeof(TElementType), cudaMemcpyHostToDevice);
+        CUDA_CHECKED_CALL cudaMemcpy(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
     }
     HOST void CopyToCPU(TStaticArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
     {
@@ -78,7 +103,7 @@ public:
 		
 		static_assert(MemoryType == EMemoryType::GPU, "");
         check(CpuArray.Num() == Num());
-        CUDA_CHECKED_CALL cudaMemcpy(CpuArray.GetData(), GetData(), Num() * sizeof(TElementType), cudaMemcpyDeviceToHost);
+        CUDA_CHECKED_CALL cudaMemcpy(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
 	}
 
 	HOST void MemSet(uint8 Value)
@@ -87,11 +112,11 @@ public:
 		
 		if (MemoryType == EMemoryType::GPU)
 		{
-			CUDA_CHECKED_CALL cudaMemset(GetData(), Value, sizeof(TElementType) * Num());
+			CUDA_CHECKED_CALL cudaMemset(GetData(), Value, SizeInBytes());
 		}
 		else
 		{
-			std::memset(GetData(), Value, sizeof(TElementType) * Num());
+			std::memset(GetData(), Value, SizeInBytes());
 		}
 	}
 
@@ -101,7 +126,7 @@ public:
 		ArrayData = nullptr;
 		ArraySize = 0;
 	}
-    HOST void Reset()
+    HOST_DEVICE void Reset()
     {
 		ArrayData = nullptr;
 		ArraySize = 0;
@@ -176,6 +201,24 @@ public:
 		return ArrayData + ArraySize;
 	}
 
+	HOST_DEVICE TSize Find(const TElementType& Element) const
+	{
+		for (TSize Index = 0; Index < Num(); Index++)
+		{
+			if ((*this)[Index] == Element)
+			{
+				return Index;
+			}
+		}
+		return TSize(-1);
+	}
+	HOST_DEVICE TSize FindChecked(const TElementType& Element) const
+	{
+		const TSize Index = Find(Element);
+		check(Index != TSize(-1));
+		return Index;
+	}
+
 protected:
 	TElementType* RESTRICT ArrayData = nullptr;
 	TSize ArraySize = 0;
@@ -225,7 +268,7 @@ public:
             GPUArray.Reserve(this->GetAllocatedSize() - GPUArray.GetAllocatedSize());
         }
         GPUArray.ArraySize = this->Num();
-        CUDA_CHECKED_CALL cudaMemcpy(GPUArray.GetData(), this->GetData(), this->Num() * sizeof(TElementType), cudaMemcpyHostToDevice);
+        CUDA_CHECKED_CALL cudaMemcpy(GPUArray.GetData(), this->GetData(), this->SizeInBytes(), cudaMemcpyHostToDevice);
     }
 
 	HOST_DEVICE TSize GetAllocatedSize() const
@@ -274,7 +317,7 @@ public:
 		if (AllocatedSize < this->ArraySize)
 		{
 			AllocatedSize = this->ArraySize;
-			FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType));
+			FMemory::Realloc(this->ArrayData, AllocatedSizeInBytes());
 		}
 		checkInfEqual(this->ArraySize, AllocatedSize);
 	}
@@ -288,7 +331,7 @@ public:
 		if (AllocatedSize < this->ArraySize)
 		{
 			AllocatedSize = this->ArraySize;
-			FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType), false);
+			FMemory::Realloc(this->ArrayData, AllocatedSizeInBytes(), false);
 		}
 		checkInfEqual(this->ArraySize, AllocatedSize);
 	}
@@ -303,7 +346,7 @@ public:
 		if (AllocatedSize != this->ArraySize)
 		{
 			AllocatedSize = this->ArraySize;
-			FMemory::Realloc(this->ArrayData, AllocatedSize * sizeof(TElementType));
+			FMemory::Realloc(this->ArrayData, AllocatedSizeInBytes());
 		}
 		checkInfEqual(this->ArraySize, AllocatedSize);
 	}

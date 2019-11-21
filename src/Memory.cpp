@@ -8,7 +8,7 @@
 
 FMemory FMemory::Singleton;
 
-inline const char* TypeToString(EMemoryType Type)
+inline const char* MemoryTypeToString(EMemoryType Type)
 {
     switch (Type)
     {
@@ -30,7 +30,7 @@ FMemory::~FMemory()
 	LOG("");
     for (auto& [_, Alloc] : Allocations)
     {
-        LOG("%s (%s) leaked %fMB", Alloc.Name, TypeToString(Alloc.Type), Utils::ToMB(Alloc.Size));
+        LOG("%s (%s) leaked %fMB", Alloc.Name, MemoryTypeToString(Alloc.Type), Utils::ToMB(Alloc.Size));
     }
     checkAlways(Allocations.empty());
     if (Allocations.empty())
@@ -41,20 +41,44 @@ FMemory::~FMemory()
 
 void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 {
+	ZoneScopedf("Alloc %" PRIu64 "B on %s", Size, MemoryTypeToString(Type));
+
 	checkAlways(Size != 0);
 	void* Ptr = nullptr;
 	if (Type == EMemoryType::GPU)
 	{
 #if DEBUG_GPU_ARRAYS
-		const cudaError_t Error = cudaMallocManaged(&Ptr, Size);
+		cudaError_t Error = cudaMallocManaged(&Ptr, Size);
 #else
-		const cudaError_t Error = cudaMalloc(&Ptr, Size);
+		cudaError_t Error = cudaMalloc(&Ptr, Size);
 #endif
+
+		if (Error == cudaErrorMemoryAllocation)
+		{
+			LOG("Out of memory, freeing memory and retrying...");
+
+			for (auto& Callback : OnOutOfMemoryFallbacks)
+			{
+				Callback();
+			}
+
+#if DEBUG_GPU_ARRAYS
+			Error = cudaMallocManaged(&Ptr, Size);
+#else
+			Error = cudaMalloc(&Ptr, Size);
+#endif
+		}
+		
 		if (Error != cudaSuccess)
 		{
 			LOG("\n\n\n");
-			LOG("Fatal error when allocating %fMB of GPUs memory!", Utils::ToMB(Size));
+			LOG("Fatal error when allocating %fMB of GPU memory!", Utils::ToMB(Size));
 			std::cout << GetStatsStringImpl() << std::endl;
+
+			for (auto& Callback : OnOutOfMemoryEvents)
+			{
+				Callback();
+			}
 		}
 		CUDA_CHECKED_CALL Error;
 		TotalAllocatedGpuMemory += Size;
@@ -65,7 +89,7 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 		check(Type == EMemoryType::CPU);
 		Ptr = std::malloc(Size);
 		TotalAllocatedCpuMemory += Size;
-		MaxTotalAllocatedCpuMemory = std::max(TotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
+		MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	Allocations[Ptr] = { Name, Size, Type };
@@ -79,6 +103,9 @@ void FMemory::FreeImpl(void* Ptr)
 
 	checkAlways(Allocations.find(Ptr) != Allocations.end());
 	auto& Alloc = Allocations[Ptr];
+	
+	ZoneScopedf("Free %" PRIu64 "B on %s", Alloc.Size, MemoryTypeToString(Alloc.Type));
+
 	if (Alloc.Type == EMemoryType::GPU)
 	{
 		CUDA_CHECK_ERROR();
@@ -91,7 +118,7 @@ void FMemory::FreeImpl(void* Ptr)
 		check(Alloc.Type == EMemoryType::CPU);
 		std::free(Ptr);
 		TotalAllocatedCpuMemory -= Alloc.Size;
-		MaxTotalAllocatedCpuMemory = std::max(TotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
+		MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
 	Allocations.erase(Ptr);
 }
@@ -162,7 +189,7 @@ void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, 
 	{
 		check(Type == EMemoryType::CPU);
 		TotalAllocatedCpuMemory += Size;
-		MaxTotalAllocatedCpuMemory = std::max(TotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
+		MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	Allocations[Ptr] = { Name, Size, Type };
@@ -204,7 +231,7 @@ std::string FMemory::GetStatsStringImpl() const
     for (auto& [_, Alloc] : Allocations)
 	{
 		std::stringstream StringStream;
-		StringStream << std::setw(15) << Alloc.Name << " (" << TypeToString(Alloc.Type) << ")";
+		StringStream << std::setw(15) << Alloc.Name << " (" << MemoryTypeToString(Alloc.Type) << ")";
 		auto& MapElement = Map[StringStream.str()];
 		MapElement.Size += Alloc.Size;
         MapElement.Count++;
@@ -225,9 +252,12 @@ std::string FMemory::GetStatsStringImpl() const
     }
 	StringStream << std::endl;
 	StringStream << "Detailed allocations:" << std::endl;
-    for (auto& [Ptr, Alloc] : Allocations)
+	
+    std::vector<std::pair<void*, Element>> AllocationsList(Allocations.begin(), Allocations.end());
+    std::sort(AllocationsList.begin(), AllocationsList.end(), [](auto& A, auto& B) { return A.second.Size > B.second.Size; });
+    for (auto& [Ptr, Alloc] : AllocationsList)
 	{
-		StringStream << "\t" << TypeToString(Alloc.Type) << "; 0x" << std::hex << Ptr << "; " << std::dec << std::setw(10) << Alloc.Size << " B; " << Alloc.Name << std::endl;
+		StringStream << "\t" << MemoryTypeToString(Alloc.Type) << "; 0x" << std::hex << Ptr << "; " << std::dec << std::setw(10) << Alloc.Size << " B; " << Alloc.Name << std::endl;
     }
     return StringStream.str();
 }

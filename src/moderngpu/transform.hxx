@@ -92,7 +92,7 @@ struct transform_f {
 
 template<typename launch_t, typename func_t, typename... args_t>
 void transform(func_t f, size_t count, context_t& context, args_t... args) {
-  cta_transform<launch_t>(detail::transform_f<launch_t>(), count, 
+  cta_transform<launch_t>(detail::transform_f<launch_t>(), (int)count, 
     context, f, count, args...);
 }
 

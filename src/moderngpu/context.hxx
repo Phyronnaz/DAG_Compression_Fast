@@ -45,7 +45,7 @@ inline std::string device_prop_string(cudaDeviceProp prop) {
 // Derive context_t to add support for streams and a custom allocator.
 
 struct context_t {
-  context_t() = default;
+	context_t() = default;
 
   // Disable copy ctor and assignment operator. We don't want to let the
   // user copy only a slice.

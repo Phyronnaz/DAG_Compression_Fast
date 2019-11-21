@@ -55,7 +55,7 @@ public:
 	~FCudaScopePerfRecorder()
 	{
 		const auto Elapsed = PerfRecorder.End();
-		LOG("%s: Processing %llu elements took %fs: %f B/s", Name, NumElements, Elapsed, NumElements / Elapsed / 1e9);
+		LOG_DEBUG("\t%s: Processing %llu elements took %fs: %f B/s", Name, NumElements, Elapsed, NumElements / Elapsed / 1e9);
 	}
 
 private:
