@@ -74,7 +74,7 @@ public:
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 		Singleton.OnOutOfMemoryEvents.push_back(std::move(Callback));
     }
-	static void RegisterOutOfMemoryFallback(std::function<void()>&& Callback)
+	static void RegisterOutOfMemoryFallback(std::function<void(std::function<void(void*)>)>&& Callback)
     {
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 		Singleton.OnOutOfMemoryFallbacks.push_back(std::move(Callback));
@@ -120,7 +120,7 @@ private:
     size_t MaxTotalAllocatedGpuMemory = 0;
     size_t MaxTotalAllocatedCpuMemory = 0;
     std::unordered_map<void*, Element> Allocations;
-	std::vector<std::function<void()>> OnOutOfMemoryFallbacks;
+	std::vector<std::function<void(std::function<void(void*)>)>> OnOutOfMemoryFallbacks;
 	std::vector<std::function<void()>> OnOutOfMemoryEvents;
 
     static FMemory Singleton;

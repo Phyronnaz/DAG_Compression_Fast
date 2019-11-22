@@ -56,10 +56,10 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 		if (Error == cudaErrorMemoryAllocation)
 		{
 			LOG("Out of memory, freeing memory and retrying...");
-
+			checkAlways(Error == cudaGetLastError());
 			for (auto& Callback : OnOutOfMemoryFallbacks)
 			{
-				Callback();
+				Callback([this](void* InPtr) { FreeImpl(InPtr); });
 			}
 
 #if DEBUG_GPU_ARRAYS

@@ -45,4 +45,6 @@ namespace DAGCompression
 	FCpuDag MergeDAGs(std::vector<FCpuDag>&& CpuDags);
 	TStaticArray<uint32, EMemoryType::GPU> CreateFinalDAG(FCpuDag&& CpuDag);
 	void FreeAll();
+
+	void Test();
 }

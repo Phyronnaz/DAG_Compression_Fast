@@ -2,6 +2,8 @@
 #include "CudaPerfRecorder.h"
 
 #include <iomanip>
+#include <atomic>
+#include <queue>
 
 #pragma push_macro("check")
 #undef check
@@ -20,15 +22,16 @@
 #include "moderngpu/kernel_merge.hxx"
 #pragma pop_macro("check")
 
-#if DEBUG_GPU_ARRAYS
+#if DEBUG_THRUST
 struct my_policy : thrust::system::cpp::execution_policy<my_policy> {};
 static auto ExecutionPolicy = my_policy();
 #else
 static auto ExecutionPolicy = thrust::cuda::par.on(0);
 #endif
 
-struct FPool
+class FPool : public std::enable_shared_from_this<FPool>
 {
+private:
 	// Sizes of all the ptr managed by this pool
 	std::unordered_map<void*, uint64> Sizes;
 
@@ -36,15 +39,72 @@ struct FPool
 	std::unordered_map<void*, uint64> Allocations;
 	// Free ptrs with real size
 	std::unordered_map<void*, uint64> FreeBuffers;
-
+	
+public:
 	uint64 NumFragments = 0;
 
-	FPool()
+	struct mgpu_context_t : mgpu::standard_context_t
 	{
-		FMemory::RegisterOutOfMemoryEvent([this]() { PrintStats(); });
-		FMemory::RegisterOutOfMemoryFallback([this]() { FreeUnused(); });
+		FPool& Pool;
+
+		mgpu_context_t(FPool& Pool)
+			: mgpu::standard_context_t(false, 0)
+			, Pool(Pool)
+		{
+		}
+
+		void* alloc(size_t size, mgpu::memory_space_t space) override
+		{
+			check(space == mgpu::memory_space_device);
+
+			return Pool.Malloc<uint8>(size);
+		}
+		void free(void* p, mgpu::memory_space_t space) override
+		{
+			check(space == mgpu::memory_space_device);
+
+			Pool.Free(p);
+		}
+		void synchronize() override
+		{
+			CUDA_CHECK_ERROR();
+		}
+	};
+	mgpu_context_t* const mgpu_context;
+
+	static std::shared_ptr<FPool> Create()
+	{
+		ZoneScoped;
+		
+		auto Pool = std::shared_ptr<FPool>(new FPool());
+		FMemory::RegisterOutOfMemoryEvent([WeakPtr = Pool->weak_from_this()]()
+		{
+			const auto Pinned = WeakPtr.lock();
+			if (Pinned) Pinned->PrintStats();
+		});
+		FMemory::RegisterOutOfMemoryFallback([WeakPtr = Pool->weak_from_this()](auto FreeFunction)
+		{
+			const auto Pinned = WeakPtr.lock();
+			if (Pinned) Pinned->FreeUnused(FreeFunction);
+		});
+		return Pool;
+	}
+	~FPool()
+	{
+		ZoneScoped;
+		check(Sizes.empty());
+		check(Allocations.empty());
+		check(FreeBuffers.empty());
+		delete mgpu_context;
 	}
 
+private:
+	FPool()
+		: mgpu_context([&]() { ZoneScopedN("Create MGPU context"); return new mgpu_context_t(*this); }())
+	{
+	}
+	
+public:
 	template<typename T>
 	T* Malloc(uint64 Size)
 	{
@@ -102,50 +162,6 @@ struct FPool
 		checkAlways(Sizes.erase(Ptr) == 1);
 	}
 
-	template<typename T>
-	TStaticArray<T, EMemoryType::GPU> CreateArray(uint64 Size)
-	{
-		return { Malloc<T>(Size), Size };
-	}
-	template<typename T>
-	TDynamicArray<T, EMemoryType::GPU> CreateDynamicArray(uint64 Size)
-	{
-		return TDynamicArray<T, EMemoryType::GPU>(CreateArray<T>(Size));
-	}
-	template<typename T>
-	TStaticArray<T, EMemoryType::GPU> FromCPU(const TStaticArray<T, EMemoryType::CPU>& Array)
-	{
-		auto NewArray = CreateArray<T>(Array.Num());
-		Array.CopyToGPU(NewArray);
-		return NewArray;
-	}
-
-	
-	template<typename T>
-	void FreeArray(TStaticArray<T, EMemoryType::GPU>& Array)
-	{
-		check(Array.IsValid());
-		Free(Array.GetData());
-		Array.Reset();
-	}
-	template<typename T>
-	TStaticArray<T, EMemoryType::GPU> ShrinkArray(TDynamicArray<T, EMemoryType::GPU>& Array)
-	{
-		ZoneScoped;
-		
-		if (Array.GetAllocatedSize() == Array.Num())
-		{
-			return TStaticArray<T, EMemoryType::GPU>(Array);
-		}
-		else
-		{
-			auto NewArray = CreateArray<T>(Array.Num());
-			CUDA_CHECKED_CALL cudaMemcpy(NewArray.GetData(), Array.GetData(), Array.Num() * sizeof(T), cudaMemcpyDeviceToDevice);
-			FreeArray(Array);
-			return NewArray;
-		}
-	}
-
 	void FreeAll()
 	{
 		ZoneScoped;
@@ -159,13 +175,14 @@ struct FPool
 		FreeBuffers.clear();
 		Sizes.clear();
 	}
-	void FreeUnused()
+	template<typename T>
+	void FreeUnused(T FreeFunction)
 	{
 		ZoneScoped;
 		
 		for (auto& It : FreeBuffers)
 		{
-			FMemory::Free(It.first);
+			FreeFunction(It.first);
 			Sizes.erase(It.first);
 		}
 		FreeBuffers.clear();
@@ -206,6 +223,49 @@ struct FPool
 		std::cout << std::endl;
 		std::cout << "############################################################" << std::endl;
 	}
+
+public:
+	template<typename T>
+	TStaticArray<T, EMemoryType::GPU> CreateArray(uint64 Size)
+	{
+		return { Malloc<T>(Size), Size };
+	}
+	template<typename T>
+	TDynamicArray<T, EMemoryType::GPU> CreateDynamicArray(uint64 Size)
+	{
+		return TDynamicArray<T, EMemoryType::GPU>(CreateArray<T>(Size));
+	}
+	template<typename T>
+	TStaticArray<T, EMemoryType::GPU> FromCPU(const TStaticArray<T, EMemoryType::CPU>& Array)
+	{
+		auto NewArray = CreateArray<T>(Array.Num());
+		Array.CopyToGPU(NewArray);
+		return NewArray;
+	}
+	template<typename T>
+	void FreeArray(TStaticArray<T, EMemoryType::GPU>& Array)
+	{
+		check(Array.IsValid());
+		Free(Array.GetData());
+		Array.Reset();
+	}
+	template<typename T>
+	TStaticArray<T, EMemoryType::GPU> ShrinkArray(TDynamicArray<T, EMemoryType::GPU>& Array)
+	{
+		ZoneScoped;
+		
+		if (Array.GetAllocatedSize() == Array.Num())
+		{
+			return TStaticArray<T, EMemoryType::GPU>(Array);
+		}
+		else
+		{
+			auto NewArray = CreateArray<T>(Array.Num());
+			CUDA_CHECKED_CALL cudaMemcpy(NewArray.GetData(), Array.GetData(), Array.Num() * sizeof(T), cudaMemcpyDeviceToDevice);
+			FreeArray(Array);
+			return NewArray;
+		}
+	}
 };
 
 template<typename T, typename F>
@@ -213,6 +273,64 @@ inline auto TransformIterator(const T* Ptr, F Lambda)
 {
 	using TReturnType = decltype(Lambda(T()));
 	return cub::TransformInputIterator<const TReturnType, F, const T*>(Ptr, Lambda);
+}
+
+template<typename T>
+inline void CheckArrayBounds(const TStaticArray<T, EMemoryType::GPU>& Array, T Min, T Max)
+{
+#if ENABLE_CHECKS
+	const auto Check = [=] GPU_LAMBDA (T Value)
+	{
+		checkf(Min <= Value, "%" PRIi64 " <= %" PRIi64, int64(Min), int64(Value));
+		checkf(Value <= Max, "%" PRIi64 " <= %" PRIi64, int64(Value), int64(Max));
+	};
+	thrust::for_each(ExecutionPolicy, Array.GetData(), Array.GetData() + Array.Num(), Check);
+	CUDA_CHECK_ERROR();
+#endif
+}
+
+template<typename TIn, typename TOut, typename F>
+inline void CheckFunctionBounds(
+	F Function, 
+	TIn MinInput, 
+	TIn MaxInput,
+	TOut MinOutput, 
+	TOut MaxOutput)
+{
+#if ENABLE_CHECKS
+	const auto Check = [=] GPU_LAMBDA (TIn Value)
+	{
+		const TOut Output = Function(Value);
+		checkf(MinOutput <= Output, "%" PRIi64 " <= %" PRIi64, int64(MinOutput), int64(Output));
+		checkf(Output <= MaxOutput, "%" PRIi64 " <= %" PRIi64, int64(Output), int64(MaxOutput));
+	};
+	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
+	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Check);
+	CUDA_CHECK_ERROR();
+#endif
+}
+
+template<typename TIn, typename TOut, typename F, typename FCondition>
+inline void CheckFunctionBoundsIf(
+	F Function,
+	FCondition Condition,
+	TIn MinInput, 
+	TIn MaxInput,
+	TOut MinOutput, 
+	TOut MaxOutput)
+{
+#if ENABLE_CHECKS
+	const auto Check = [=] GPU_LAMBDA (TIn Value)
+	{
+		if (!Condition(Value)) return;
+		const TOut Output = Function(Value);
+		checkf(MinOutput <= Output, "%" PRIi64 " <= %" PRIi64, int64(MinOutput), int64(Output));
+		checkf(Output <= MaxOutput, "%" PRIi64 " <= %" PRIi64, int64(Output), int64(MaxOutput));
+	};
+	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
+	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Check);
+	CUDA_CHECK_ERROR();
+#endif
 }
 
 template<typename T>
@@ -452,13 +570,15 @@ inline void AdjacentDifferenceWithTransform(
 	SetElement(Out, 0, FirstElement);
 }
 
-template<typename Type, typename MapFunction, typename OutIterator>
+template<typename TypeIn, typename TypeOut, typename MapFunction>
 inline void ScatterPred(
-	const TStaticArray<Type, EMemoryType::GPU>& In,
+	const TStaticArray<TypeIn, EMemoryType::GPU>& In,
 	MapFunction Map,
-	OutIterator Out)
+	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
 {
 	ZoneScoped;
+
+	CheckFunctionBounds<uint64, uint64>(Map, 0, In.Num() - 1, 0, Out.Num() - 1);
 	
 	FCudaScopePerfRecorder PerfRecorder(__FUNCTION__, In.Num());
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
@@ -467,16 +587,18 @@ inline void ScatterPred(
 		In.GetData(),
 		In.GetData() + In.Num(),
 		MapTransform,
-		Out);
+		Out.GetData());
 }
 
-template<typename Type, typename IndexType, typename OutIterator>
+template<typename TypeIn, typename TypeOut, typename IndexType>
 inline void Scatter(
-	const TStaticArray<Type, EMemoryType::GPU>& In,
+	const TStaticArray<TypeIn, EMemoryType::GPU>& In,
 	const TStaticArray<IndexType, EMemoryType::GPU>& Map,
-	OutIterator Out)
+	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
 {
 	ZoneScoped;
+
+	CheckArrayBounds<IndexType>(Map, 0, Out.Num() - 1);
 	
 	FCudaScopePerfRecorder PerfRecorder(__FUNCTION__, In.Num());
 	thrust::scatter(
@@ -484,16 +606,18 @@ inline void Scatter(
 		In.GetData(),
 		In.GetData() + In.Num(),
 		Map.GetData(),
-		Out);
+		Out.GetData());
 }
 
-template<typename Type, typename InF, typename IndexType, typename OutIterator>
+template<typename TypeIn, typename TypeOut, typename InF, typename IndexType>
 inline void ScatterWithTransform(
-	const TStaticArray<Type, EMemoryType::GPU>& In, InF Transform,
+	const TStaticArray<TypeIn, EMemoryType::GPU>& In, InF Transform,
 	const TStaticArray<IndexType, EMemoryType::GPU>& Map,
-	OutIterator Out)
+	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
 {
 	ZoneScoped;
+
+	CheckArrayBounds<IndexType>(Map, 0, Out.Num() - 1);
 	
 	FCudaScopePerfRecorder PerfRecorder(__FUNCTION__, In.Num());
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
@@ -502,17 +626,19 @@ inline void ScatterWithTransform(
 		It,
 		It + In.Num(),
 		Map.GetData(),
-		Out);
+		Out.GetData());
 }
 
-template<typename Type, typename MapFunction, typename OutIterator, typename F>
+template<typename TypeIn, typename TypeOut, typename MapFunction, typename F>
 inline void ScatterIf(
-	const TStaticArray<Type, EMemoryType::GPU>& In,
+	const TStaticArray<TypeIn, EMemoryType::GPU>& In,
 	MapFunction Map,
-	OutIterator Out,
+	TStaticArray<TypeOut, EMemoryType::GPU>& Out,
 	F Condition)
 {
 	ZoneScoped;
+
+	CheckFunctionBoundsIf<uint64, uint64>(Map, Condition, 0, In.Num() - 1, 0, Out.Num() - 1);
 	
 	FCudaScopePerfRecorder PerfRecorder(__FUNCTION__, In.Num());
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
@@ -522,18 +648,20 @@ inline void ScatterIf(
 		In.GetData() + In.Num(),
 		MapTransform,
 		thrust::make_counting_iterator<uint64>(0),
-		Out,
+		Out.GetData(),
 		Condition);
 }
 
-template<typename Type, typename InF, typename MapFunction, typename OutIterator, typename F>
+template<typename TypeIn, typename TypeOut, typename InF, typename MapFunction, typename F>
 inline void ScatterIfWithTransform(
-	const TStaticArray<Type, EMemoryType::GPU>& In, InF Transform,
+	const TStaticArray<TypeIn, EMemoryType::GPU>& In, InF Transform,
 	MapFunction Map,
-	OutIterator Out,
+	TStaticArray<TypeOut, EMemoryType::GPU>& Out,
 	F Condition)
 {
 	ZoneScoped;
+
+	CheckFunctionBoundsIf<uint64, uint64>(Map, Condition, 0, In.Num() - 1, 0, Out.Num() - 1);
 	
 	FCudaScopePerfRecorder PerfRecorder(__FUNCTION__, In.Num());
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
@@ -544,7 +672,7 @@ inline void ScatterIfWithTransform(
 		It + In.Num(),
 		MapTransform,
 		thrust::make_counting_iterator<uint64>(0),
-		Out,
+		Out.GetData(),
 		Condition);
 }
 
@@ -587,28 +715,6 @@ inline void TransformIf(
 		Condition);
 }
 
-struct mgpu_context_t : mgpu::standard_context_t
-{
-	FPool* Pool = nullptr;
-	
-	void* alloc(size_t size, mgpu::memory_space_t space) override
-	{
-		check(space == mgpu::memory_space_device);
-		check(Pool);
-
-		return Pool->Malloc<uint8>(size);
-	}
-	void free(void* p, mgpu::memory_space_t space) override
-	{
-		check(space == mgpu::memory_space_device);
-		check(Pool);
-
-		Pool->Free(p);
-	}
-};
-
-mgpu_context_t* mgpu_context = nullptr;
-
 template<typename TValueIt, typename TKey, typename TValue, typename F>
 inline void MergePairs(
 	FPool& Pool,
@@ -625,19 +731,13 @@ inline void MergePairs(
 	checkEqual(OutKeys.Num(), OutValues.Num());
 	checkEqual(InKeysA.Num() + InKeysB.Num(), OutValues.Num());
 
-	if (!mgpu_context)
-	{
-		mgpu_context = new mgpu_context_t();
-	}
-	mgpu_context->Pool = &Pool;
-
 	FCudaScopePerfRecorder PerfRecorder(__FUNCTION__, OutKeys.Num());
 	mgpu::merge(
 		InKeysA.GetData(), InValuesA, Cast<int32>(InKeysA.Num()),
 		InKeysB.GetData(), InValuesB, Cast<int32>(InKeysB.Num()),
 		OutKeys.GetData(), OutValues.GetData(),
 		Comp,
-		*mgpu_context);
+		*Pool.mgpu_context);
 }
 
 template<typename T>
@@ -743,7 +843,7 @@ struct FGpuLevel
 		NumWords = GetElement(ChildPositions, ChildPositions.Num() - 1) + Utils::TotalSize(GetElement(ChildMasks, ChildMasks.Num() - 1));
 	}
 	template<typename T>
-	void WriteTo(uint32* Data, T GetChildIndex) const
+	void WriteTo(TStaticArray<uint32, EMemoryType::GPU>& Data, T GetChildIndex) const
 	{
 		ZoneScoped;
 
@@ -794,7 +894,7 @@ void SortLevel(
 	const uint32 NumUniques = GetElement(SortedHashesToUniqueHashes, SortedHashesToUniqueHashes.Num() - 1) + 1;
 
 	OutHashesToSortedUniqueHashes = Pool.CreateArray<uint32>(Hashes.Num());
-	Scatter(SortedHashesToUniqueHashes, SortedHashesToHashes, OutHashesToSortedUniqueHashes.GetData());
+	Scatter(SortedHashesToUniqueHashes, SortedHashesToHashes, OutHashesToSortedUniqueHashes);
 	Pool.FreeArray(SortedHashesToHashes);
 	Pool.FreeArray(SortedHashesToUniqueHashes);
 	
@@ -803,7 +903,7 @@ void SortLevel(
 		checkEqual(Array.Num(), OutHashesToSortedUniqueHashes.Num());
 		using T = typename std::remove_reference<decltype(Array[0])>::type;
 		auto FinalArray = Pool.CreateArray<T>(NumUniques);
-		Scatter(Array, OutHashesToSortedUniqueHashes, FinalArray.GetData());
+		Scatter(Array, OutHashesToSortedUniqueHashes, FinalArray);
 		Pool.FreeArray(Array);
 		Array = FinalArray;
 	};
@@ -853,7 +953,8 @@ FGpuLevel ExtractLevel(
 		OutLevel.ChildrenIndices.MemSet(0xFF);
 
 		const auto CompactChildrenToExpandedChildren = [=] GPU_LAMBDA (uint64 Index) { return (Fragments[Index] & 0b111) + 8 * UniqueParentsSum[Index]; };
-		ScatterPred(FragmentIndicesToChildrenIndices, CompactChildrenToExpandedChildren, OutLevel.ChildrenIndices.CastTo<uint32>().GetData());
+		auto Out = OutLevel.ChildrenIndices.CastTo<uint32>();
+		ScatterPred(FragmentIndicesToChildrenIndices, CompactChildrenToExpandedChildren, Out);
 
 #if ENABLE_CHECKS && DEBUG_GPU_ARRAYS
 		const auto ChildrenIndicesArray = OutLevel.ChildrenIndices.CastTo<uint32>();
@@ -892,10 +993,11 @@ void CheckDag(const TStaticArray<uint32, EMemoryType::GPU>& Dag, uint32 Index, u
 	}
 }
 
-inline FPool& GetPool()
+inline FPool& GetGlobalPool()
 {
-	static FPool Pool;
-	return Pool;
+	static std::shared_ptr<FPool> Pool;
+	if (!Pool) Pool = FPool::Create();
+	return *Pool;
 }
 
 FCpuDag DAGCompression::CreateDAG(const TStaticArray<FMortonCode, EMemoryType::GPU>& InFragments, const int32 Depth)
@@ -910,7 +1012,7 @@ FCpuDag DAGCompression::CreateDAG(const TStaticArray<FMortonCode, EMemoryType::G
 		return CpuDag;
 	}
 	
-	FPool& Pool = GetPool();
+	FPool& Pool = GetGlobalPool();
 
 	if (Pool.NumFragments < InFragments.Num())
 	{
@@ -1045,13 +1147,13 @@ uint32 Merge(
 	OutIndicesBToMergedIndices = Pool.CreateArray<uint32>(KeysB.Num());
 	ScatterIf(
 		UniqueSum, 
-		[=] GPU_LAMBDA (uint64 Index) { return Permutation[Index]; },
-		OutIndicesAToMergedIndices.GetData(),
+		[=] GPU_LAMBDA (uint64 Index) { return Utils::ClearFlag(Permutation[Index]); },
+		OutIndicesAToMergedIndices,
 		[=] GPU_LAMBDA (uint64 Index) { return !Utils::HasFlag(Permutation[Index]); });
 	ScatterIf(
 		UniqueSum, 
 		[=] GPU_LAMBDA (uint64 Index) { return Utils::ClearFlag(Permutation[Index]); },
-		OutIndicesBToMergedIndices.GetData(),
+		OutIndicesBToMergedIndices,
 		[=] GPU_LAMBDA (uint64 Index) { return Utils::HasFlag(Permutation[Index]); });
 
 	Pool.FreeArray(UniqueSum);
@@ -1104,8 +1206,8 @@ inline FCpuDag MergeDAGs(
 			IndicesBToMergedIndices);
 
 		auto MergedLeaves = Pool.CreateArray<uint64>(NumMergedLeaves);
-		Scatter(LeavesA, IndicesAToMergedIndices, MergedLeaves.GetData());
-		Scatter(LeavesB, IndicesBToMergedIndices, MergedLeaves.GetData());
+		Scatter(LeavesA, IndicesAToMergedIndices, MergedLeaves);
+		Scatter(LeavesB, IndicesBToMergedIndices, MergedLeaves);
 
 		Pool.FreeArray(LeavesA);
 		Pool.FreeArray(LeavesB);
@@ -1141,8 +1243,8 @@ inline FCpuDag MergeDAGs(
 		{
 			auto MergedHashes = Pool.CreateArray<uint64>(NumMerged);
 
-			Scatter(HashesA, IndicesAToMergedIndices, MergedHashes.GetData());
-			Scatter(HashesB, IndicesBToMergedIndices, MergedHashes.GetData());
+			Scatter(HashesA, IndicesAToMergedIndices, MergedHashes);
+			Scatter(HashesB, IndicesBToMergedIndices, MergedHashes);
 
 			Pool.FreeArray(HashesA);
 			Pool.FreeArray(HashesB);
@@ -1159,8 +1261,8 @@ inline FCpuDag MergeDAGs(
 			LevelA.ChildMasks.Free();
 			LevelB.ChildMasks.Free();
 
-			Scatter(ChildMasksA, IndicesAToMergedIndices, MergedChildMasks.GetData());
-			Scatter(ChildMasksB, IndicesBToMergedIndices, MergedChildMasks.GetData());
+			Scatter(ChildMasksA, IndicesAToMergedIndices, MergedChildMasks);
+			Scatter(ChildMasksB, IndicesBToMergedIndices, MergedChildMasks);
 
 			Pool.FreeArray(ChildMasksA);
 			Pool.FreeArray(ChildMasksB);
@@ -1191,9 +1293,9 @@ inline FCpuDag MergeDAGs(
 			LevelA.ChildrenIndices.Free();
 			LevelB.ChildrenIndices.Free();
 
-			ScatterWithTransform(ChildrenIndicesA, TransformA, IndicesAToMergedIndices, MergedChildrenIndices.GetData());
-			ScatterWithTransform(ChildrenIndicesB, TransformB, IndicesBToMergedIndices, MergedChildrenIndices.GetData());
-
+			ScatterWithTransform(ChildrenIndicesA, TransformA, IndicesAToMergedIndices, MergedChildrenIndices);
+			ScatterWithTransform(ChildrenIndicesB, TransformB, IndicesBToMergedIndices, MergedChildrenIndices);
+			
 			Pool.FreeArray(ChildrenIndicesA);
 			Pool.FreeArray(ChildrenIndicesB);
 
@@ -1217,12 +1319,135 @@ inline FCpuDag MergeDAGs(
 	return MergedCpuDag;
 }
 
-// Note: dags are spit in morton order
+template<class T>
+class TSafeQueue
+{
+public:
+	TSafeQueue() = default;
+	~TSafeQueue() = default;
+
+	void Enqueue(T Element)
+	{
+		std::lock_guard<std::mutex> Lock(Mutex);
+		Queue.push(Element);
+	}
+	bool Dequeue(T& Element)
+	{
+		std::unique_lock<std::mutex> Lock(Mutex);
+		if (Queue.empty()) return false;
+		Element = Queue.front();
+		Queue.pop();
+		return true;
+	}
+	
+private:
+	std::queue<T> Queue;
+	mutable std::mutex Mutex;
+};
+
+class FThreadPool
+{
+public:
+	using FTask = std::function<void(FPool&)>;
+	
+private:
+	std::vector<std::thread> Threads;
+	TSafeQueue<FTask> Tasks;
+	std::atomic<uint32> Stop{ 0 };
+
+	std::mutex OnEnqueueMutex;
+	std::condition_variable OnEnqueue;
+	
+	std::atomic<uint32> WaitingThreads{ 0 };
+	std::mutex OnAllWaitingMutex;
+	std::condition_variable OnAllWaiting;
+	
+public:
+	explicit FThreadPool(int32 NumThreads)
+	{
+		ZoneScoped;
+		
+		Threads.reserve(NumThreads);
+		for (int32 Index = 0; Index < NumThreads; ++Index)
+		{
+			Threads.emplace_back([this]() { RunThread(); });
+		}
+	}
+	~FThreadPool()
+	{
+		check(Stop);
+	}
+
+	void WaitForCompletion()
+	{
+		ZoneScoped;
+		
+		if (Threads.empty())
+		{
+			FTask Task;
+			while (Tasks.Dequeue(Task))
+			{
+				Task(GetGlobalPool());
+			}
+		}
+		else
+		{
+			std::unique_lock<std::mutex> Lock(OnAllWaitingMutex);
+			OnAllWaiting.wait(Lock);
+		}
+	}
+	void Enqueue(FTask Task)
+	{
+		ZoneScoped;
+
+		Tasks.Enqueue(std::move(Task));
+		OnEnqueue.notify_all();
+	}
+	void Destroy()
+	{
+		ZoneScoped;
+
+		Stop = 1;
+		OnEnqueue.notify_all();
+		for (auto& Thread : Threads)
+		{
+			Thread.join();
+		}
+	}
+
+private:
+	void RunThread()
+	{
+		ZoneScoped;
+		
+		auto Pool = FPool::Create();
+		while (!Stop)
+		{
+			FTask Task;
+			if (Tasks.Dequeue(Task))
+			{
+				Task(*Pool);
+			}
+			else
+			{
+				std::unique_lock<std::mutex> Lock(OnEnqueueMutex);
+				if (1 + WaitingThreads.fetch_add(1) == Threads.size())
+				{
+					OnAllWaiting.notify_all();
+				}
+				OnEnqueue.wait(Lock);
+				WaitingThreads--;
+			}
+		}
+		Pool->FreeAll();
+	}
+};
+
+// Note: dags are split in morton order
 FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 {
 	ZoneScoped;
 	
-	check(CpuDags.size() % 8 == 0);
 	check(Utils::IsPowerOf2(CpuDags.size()));
 	const int32 NumLevels = int32(CpuDags[0].Levels.size());
 	for (auto& CpuDag : CpuDags)
@@ -1230,81 +1455,94 @@ FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 		checkEqual(CpuDag.Levels.size(), NumLevels);
 	}
 
-	FPool& Pool = GetPool();
-	Pool.FreeAll();
+	GetGlobalPool().FreeAll();
+
+	FThreadPool ThreadPool(NUM_MERGE_THREADS);
 
 	int32 PassIndex = 0;
 	while (CpuDags.size() > 1)
 	{
 		ZoneScopedf("Pass %d", PassIndex++);
 		
+		check(CpuDags.size() % 8 == 0);
+		
 		std::vector<FCpuDag> NewCpuDags;
+		NewCpuDags.resize(CpuDags.size() / 8);
+		
 		for (int32 SubDagIndex = 0; SubDagIndex < CpuDags.size() / 8; SubDagIndex++)
 		{
-			ZoneScopedf("Sub Dag %d", SubDagIndex);
-			
-			const auto GetDag = [&](int32 Index) -> FCpuDag& { return CpuDags[8 * SubDagIndex + Index]; };
-
-			uint64 Hashes[8];
-			const auto CopyHash = [&](int32 Index)
+			ThreadPool.Enqueue([&, SubDagIndex](FPool& Pool) 
 			{
-				auto& TopLevelHashes = GetDag(Index).Levels[0].Hashes;
-				checkInfEqual(TopLevelHashes.Num(), 1);
-				if (TopLevelHashes.Num() > 0)
+				ZoneScopedf("Sub Dag %d", SubDagIndex);
+				
+				const auto GetDag = [&](int32 Index) -> FCpuDag& { return CpuDags[8 * SubDagIndex + Index]; };
+
+				uint64 Hashes[8];
+				const auto CopyHash = [&](int32 Index)
 				{
-					check(TopLevelHashes[0] != 0);
-					Hashes[Index] = TopLevelHashes[0];
-				}
-				else
+					auto& TopLevelHashes = GetDag(Index).Levels[0].Hashes;
+					checkInfEqual(TopLevelHashes.Num(), 1);
+					if (TopLevelHashes.Num() > 0)
+					{
+						check(TopLevelHashes[0] != 0);
+						Hashes[Index] = TopLevelHashes[0];
+					}
+					else
+					{
+						Hashes[Index] = 0;
+					}
+				};
+
+				CopyHash(0);
+				FCpuDag MergedDag = GetDag(0);
+				for (int32 Index = 1; Index < 8; Index++)
 				{
-					Hashes[Index] = 0;
+					CopyHash(Index);
+					MergedDag = MergeDAGs(Pool, std::move(MergedDag), std::move(GetDag(Index)));
 				}
-			};
 
-			CopyHash(0);
-			FCpuDag MergedDag = GetDag(0);
-			for (int32 Index = 1; Index < 8; Index++)
-			{
-				CopyHash(Index);
-				MergedDag = MergeDAGs(Pool, std::move(MergedDag), std::move(GetDag(Index)));
-			}
+				// MergedHashes contains all the root subdags hashes
+				// Use the stored hashes to find back the roots indices
+				// The new children will be in the correct order as dags are in morton order (see AABB split)
 
-			// MergedHashes contains all the root subdags hashes
-			// Use the stored hashes to find back the roots indices
-			// The new children will be in the correct order as dags are in morton order (see AABB split)
-
-			uint8 ChildMask = 0;
-			FChildrenIndices ChildrenIndices;
-			const auto& MergedHashes = MergedDag.Levels[0].Hashes;
-			for (int32 Index = 0; Index < 8; Index++)
-			{
-				const uint64 Hash = Hashes[Index];
-				if (Hash == 0)
+				uint8 ChildMask = 0;
+				FChildrenIndices ChildrenIndices;
+				const auto& MergedHashes = MergedDag.Levels[0].Hashes;
+				for (int32 Index = 0; Index < 8; Index++)
 				{
-					ChildrenIndices.Indices[Index] = 0xFFFFFFFF;
+					const uint64 Hash = Hashes[Index];
+					if (Hash == 0)
+					{
+						ChildrenIndices.Indices[Index] = 0xFFFFFFFF;
+					}
+					else
+					{
+						ChildMask |= 1 << Index;
+						ChildrenIndices.Indices[Index] = uint32(MergedHashes.FindChecked(Hash));
+					}
 				}
-				else
+				const uint64 Hash = HashChildrenHashes(Hashes);
+
+				FCpuLevel TopLevel;
+				if (ChildMask != 0)
 				{
-					ChildMask |= 1 << Index;
-					ChildrenIndices.Indices[Index] = uint32(MergedHashes.FindChecked(Hash));
+					TopLevel.ChildMasks = TStaticArray<uint8, EMemoryType::CPU>("ChildMasks", { ChildMask });
+					TopLevel.ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::CPU>("ChildrenIndices", { ChildrenIndices });
+					TopLevel.Hashes = TStaticArray<uint64, EMemoryType::CPU>("Hashes", { Hash });
 				}
-			}
-			const uint64 Hash = HashChildrenHashes(Hashes);
+				MergedDag.Levels.insert(MergedDag.Levels.begin(), TopLevel);
 
-			FCpuLevel TopLevel;
-			if (ChildMask != 0)
-			{
-				TopLevel.ChildMasks = TStaticArray<uint8, EMemoryType::CPU>("ChildMasks", { ChildMask });
-				TopLevel.ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::CPU>("ChildrenIndices", { ChildrenIndices });
-				TopLevel.Hashes = TStaticArray<uint64, EMemoryType::CPU>("Hashes", { Hash });
-			}
-			MergedDag.Levels.insert(MergedDag.Levels.begin(), TopLevel);
-
-			NewCpuDags.push_back(MergedDag);
+				NewCpuDags[SubDagIndex] = MergedDag;
+			});
 		}
+
+		ThreadPool.WaitForCompletion();
+		
 		CpuDags = std::move(NewCpuDags);
 	}
 	checkEqual(CpuDags.size(), 1);
+
+	ThreadPool.Destroy();
 
 	return CpuDags[0];
 }
@@ -1313,7 +1551,7 @@ TStaticArray<uint32, EMemoryType::GPU> DAGCompression::CreateFinalDAG(FCpuDag&& 
 {
 	ZoneScoped;
 	
-	FPool& Pool = GetPool();
+	FPool& Pool = GetGlobalPool();
 	
 	std::vector<FGpuLevel> Levels;
 	for (auto& Level : CpuDag.Levels)
@@ -1340,20 +1578,22 @@ TStaticArray<uint32, EMemoryType::GPU> DAGCompression::CreateFinalDAG(FCpuDag&& 
 	{
 		const auto& Level = Levels[LevelIndex];
 		const uint32 NextLevelStart = Cast<uint32>(Offset + Level.NumWords);
+		checkInfEqual(Offset, Num);
+		auto DagWithOffset = TStaticArray<uint32, EMemoryType::GPU>(Dag.GetData() + Offset, Num - Offset);
 		if (LevelIndex == Levels.size() - 1)
 		{
 			const auto GetChildIndex = [=] GPU_LAMBDA (uint32 Index) { return NextLevelStart + 2 * Index; };
-			Level.WriteTo(Dag.GetData() + Offset, GetChildIndex);
-
+			Level.WriteTo(DagWithOffset, GetChildIndex);
 		}
 		else
 		{
 			const auto NextLevelChildPositions = Levels[LevelIndex + 1].ChildPositions;
 			const auto GetChildIndex = [=] GPU_LAMBDA (uint32 Index) { return NextLevelStart + NextLevelChildPositions[Index]; };
-			Level.WriteTo(Dag.GetData() + Offset, GetChildIndex);
+			Level.WriteTo(DagWithOffset, GetChildIndex);
 		}
 		Offset += Levels[LevelIndex].NumWords;
 	}
+	checkEqual(Offset + 2 * Leaves.Num(), Num);
 	CUDA_CHECKED_CALL cudaMemcpy(Dag.GetData() + Offset, Leaves.GetData(), Leaves.Num() * sizeof(uint64), cudaMemcpyDeviceToDevice);
 
 #if ENABLE_CHECKS && DEBUG_GPU_ARRAYS
@@ -1371,5 +1611,37 @@ TStaticArray<uint32, EMemoryType::GPU> DAGCompression::CreateFinalDAG(FCpuDag&& 
 
 void DAGCompression::FreeAll()
 {
-	GetPool().FreeAll();
+	GetGlobalPool().FreeAll();
+}
+
+void DAGCompression::Test()
+{
+	TStaticArray<uint64, EMemoryType::GPU> Array("Name", 100000000);
+	Array.MemSet(255);
+
+	const auto Lambda = [=](TStaticArray<uint64, EMemoryType::GPU> Array2)
+	{
+		ZoneScoped;
+		Transform(Array, Array2, [] GPU_LAMBDA (uint64 Value) { return Value - 1; });
+		auto CpuArray = Array2.CreateCPU();
+		for (uint64 Value : CpuArray)
+		{
+			check(Value == uint64(-2));
+		}
+	};
+	TStaticArray<uint64, EMemoryType::GPU> ArrayA("Name", Array.Num());
+	TStaticArray<uint64, EMemoryType::GPU> ArrayB("Name", Array.Num());
+	TStaticArray<uint64, EMemoryType::GPU> ArrayC("Name", Array.Num());
+	TStaticArray<uint64, EMemoryType::GPU> ArrayD("Name", Array.Num());
+	
+	const auto Lambda2 = [=](TStaticArray<uint64, EMemoryType::GPU> Array2) { return [=]() { Lambda(Array2); }; };
+	std::thread thread0(Lambda2(ArrayA));
+	std::thread thread1(Lambda2(ArrayB));
+	std::thread thread2(Lambda2(ArrayC));
+	std::thread thread3(Lambda2(ArrayD));
+	thread0.join();
+	thread1.join();
+	thread2.join();
+	thread3.join();
+	while (true);
 }

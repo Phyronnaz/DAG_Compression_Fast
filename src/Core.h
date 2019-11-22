@@ -1,17 +1,21 @@
 #pragma once
 
-#define ENABLE_CHECKS 0
+#define ENABLE_CHECKS 1
 #define DEBUG_GPU_ARRAYS 0
-#define ENABLE_FORCEINLINE !ENABLE_CHECKS
-#define ENABLE_FLATTEN 0
-#define LEVELS 15
 
+#define LEVELS 16
 #define SUBDAG_LEVELS 12
 #define FRAGMENTS_MEMORY_IN_MILLIONS 160
 
-#define PRINT_DEBUG_INFO 0
+#define NUM_MERGE_THREADS 32
+#define PRINT_DEBUG_INFO 1
+#define DEBUG_THRUST 0
+
+#define ENABLE_FORCEINLINE !ENABLE_CHECKS
+#define ENABLE_FLATTEN 0
 
 static_assert(SUBDAG_LEVELS <= LEVELS, "");
+static_assert(!DEBUG_GPU_ARRAYS || NUM_MERGE_THREADS == 0, "");
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -172,7 +176,7 @@ TmpIntVector threadIdx;
 #define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
 #define CUDA_CHECK_ERROR() \
 	{ \
-		CUDA_CHECKED_CALL cudaDeviceSynchronize(); \
+		CUDA_CHECKED_CALL cudaStreamSynchronize(0); \
 		CUDA_CHECKED_CALL cudaGetLastError(); \
 	}
 

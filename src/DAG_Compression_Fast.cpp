@@ -301,6 +301,8 @@ int main()
 				DagsToMerge.push_back(CpuDag);
 			}}
 
+		FrameMark;
+
 		LOG("");
 		LOG("############################################################");
 		LOG("Merging");
@@ -319,6 +321,8 @@ int main()
 		}
 		const double MergeDagsElapsed = Utils::Seconds() - MergeDagsStartTime;
 		LOG_DEBUG("MergeDags took %fs", MergeDagsElapsed);
+
+		FrameMark;
 
 		const double CreateFinalDAGStartTime = Utils::Seconds();
 		Dag = DAGCompression::CreateFinalDAG(std::move(MergedDag));
