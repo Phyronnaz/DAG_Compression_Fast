@@ -177,6 +177,7 @@ void main()
 		gl_FragCoord.y,
 		gl_FragCoord.z * grid_dim);
 
+#if 0
 	// Conservative in z
 	float dzdx = 0.5 * dFdxFine(gl_FragCoord.z) * grid_dim;
 	float dzdy = 0.5 * dFdyFine(gl_FragCoord.z) * grid_dim;
@@ -193,20 +194,28 @@ void main()
 		if (i == 0 || apa[i] != apa[i - 1])
 		{
 			uvec3 subvoxel_coord2 = uvec3(clamp(uvec2(subvoxel_pos.xy), uvec2(0), uvec2(grid_dim - 1)), uint(apa[i]));
-			if (axis_id == 1)
-			{
-				subvoxel_coord2.xyz = subvoxel_coord2.zyx;
-			}
-			else if (axis_id == 2)
-			{
-				subvoxel_coord2.xyz = subvoxel_coord2.xzy;
-			}
-			else if (axis_id == 3)
-			{
-				subvoxel_coord2.xyz = subvoxel_coord2.yxz;
-			}
-			uint32_t idx = atomicCounterIncrement(frag_count);
-			position_ssbo[idx] = JOIN(mortonEncode, MORTON_BITS)(subvoxel_coord2.x, subvoxel_coord2.y, subvoxel_coord2.z);
 		}
 	}
+#endif
+	uvec3 subvoxel_coord2 = clamp(uvec3(subvoxel_pos), uvec3(0), uvec3(grid_dim - 1));
+	if (axis_id == 1)
+	{
+		subvoxel_coord2.xyz = subvoxel_coord2.zyx;
+	}
+	else if (axis_id == 2)
+	{
+		subvoxel_coord2.xyz = subvoxel_coord2.xzy;
+	}
+	else if (axis_id == 3)
+	{
+		subvoxel_coord2.xyz = subvoxel_coord2.yxz;
+	}
+	uint32_t idx = atomicCounterIncrement(frag_count);
+	position_ssbo[idx] = JOIN(mortonEncode, MORTON_BITS)(subvoxel_coord2.x, subvoxel_coord2.y, subvoxel_coord2.z);
+	
+#if ENABLE_COLORS
+	// Put the color in the upper bits
+	uvec4 color_enc = clamp(uvec4(round(255.0 * base_color)), uvec4(0), uvec4(255));
+	position_ssbo[idx] |= (uint64_t(color_enc.b) << 56) | (uint64_t(color_enc.g) << 48) | (uint64_t(color_enc.r) << 40);
+#endif
 }

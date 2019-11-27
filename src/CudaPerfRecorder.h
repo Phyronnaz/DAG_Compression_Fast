@@ -47,6 +47,7 @@ class FCudaScopePerfRecorder
 {
 public:
 	FCudaScopePerfRecorder(const char* Name, uint64 NumElements)
+#if PRINT_DEBUG_INFO
 		: Name(Name)
 		, NumElements(NumElements)
 	{
@@ -62,4 +63,8 @@ private:
 	const char* const Name;
 	const uint64 NumElements;
 	FCudaPerfRecorder PerfRecorder;
+#else
+	{
+	}
+#endif
 };

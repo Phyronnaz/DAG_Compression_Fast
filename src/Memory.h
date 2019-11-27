@@ -24,7 +24,7 @@ public:
     template<typename T>
     static T* Malloc(const char* Name, uint64 Size, EMemoryType Type)
 	{
-		ZoneScoped;
+		PROFILE_FUNCTION();
         checkAlways(Size % sizeof(T) == 0);
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
         return reinterpret_cast<T*>(Singleton.MallocImpl(Name, Size, Type));
@@ -32,14 +32,14 @@ public:
     template<typename T>
     static void Free(T* Ptr)
     {
-		ZoneScoped;
+		PROFILE_FUNCTION();
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
         Singleton.FreeImpl(reinterpret_cast<void*>(Ptr));
     }
     template<typename T>
     static void Realloc(T*& Ptr, uint64 NewSize, bool bCopyData = true)
     {
-		ZoneScoped;
+		PROFILE_FUNCTION();
         std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 		void* Copy = reinterpret_cast<void*>(Ptr);
         Singleton.ReallocImpl(Copy, NewSize, bCopyData);
@@ -146,9 +146,14 @@ public:
 	}
 	inline T ToCPU() const
 	{
-		T CPU;
-		CUDA_CHECKED_CALL cudaMemcpy(&CPU, Ptr, sizeof(T), cudaMemcpyDeviceToHost);
-		return CPU;
+		static T* CPU = nullptr;
+		if (!CPU)
+		{
+			CUDA_CHECKED_CALL cudaMallocHost(&CPU, sizeof(T));
+		}
+		CUDA_CHECKED_CALL cudaMemcpyAsync(CPU, Ptr, sizeof(T), cudaMemcpyDeviceToHost);
+		CUDA_CHECKED_CALL cudaStreamSynchronize(0);
+		return *CPU;
 	}
 
 private:

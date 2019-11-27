@@ -70,45 +70,53 @@ struct TStaticArray
 
 	HOST TStaticArray<TElementType, EMemoryType::GPU, TSize> CreateGPU() const
 	{
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		static_assert(MemoryType == EMemoryType::CPU, "");
-	    check(IsValid());
+		if (!IsValid())
+		{
+			return {};
+		}
         auto Result = TStaticArray<TElementType, EMemoryType::GPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
         CopyToGPU(Result);
         return Result;
     }
 	HOST TStaticArray<TElementType, EMemoryType::CPU, TSize> CreateCPU() const
 	{
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		static_assert(MemoryType == EMemoryType::GPU, "");
-	    check(IsValid());
-        auto Result = TStaticArray<TElementType, EMemoryType::CPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
+		if (!IsValid())
+		{
+			return {};
+		}
+		auto Result = TStaticArray<TElementType, EMemoryType::CPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
         CopyToCPU(Result);
         return Result;
     }
 
     HOST void CopyToGPU(TStaticArray<TElementType, EMemoryType::GPU, TSize>& GpuArray) const
     {
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		static_assert(MemoryType == EMemoryType::CPU, "");
         check(GpuArray.Num() == Num());
-        CUDA_CHECKED_CALL cudaMemcpy(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
+        CUDA_CHECKED_CALL cudaMemcpyAsync(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
+		CUDA_CHECKED_CALL cudaStreamSynchronize(0);
     }
     HOST void CopyToCPU(TStaticArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
     {
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		static_assert(MemoryType == EMemoryType::GPU, "");
         check(CpuArray.Num() == Num());
-        CUDA_CHECKED_CALL cudaMemcpy(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
+        CUDA_CHECKED_CALL cudaMemcpyAsync(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
+		CUDA_CHECKED_CALL cudaStreamSynchronize(0);
 	}
 
 	HOST void MemSet(uint8 Value)
 	{
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		if (MemoryType == EMemoryType::GPU)
 		{
@@ -256,7 +264,7 @@ public:
 
     HOST void CopyToGPU(TDynamicArray<TElementType, EMemoryType::GPU, TSize>& GPUArray) const
     {
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		static_assert(MemoryType == EMemoryType::CPU, "");
         if (!GPUArray.is_valid())
@@ -268,7 +276,8 @@ public:
             GPUArray.Reserve(this->GetAllocatedSize() - GPUArray.GetAllocatedSize());
         }
         GPUArray.ArraySize = this->Num();
-        CUDA_CHECKED_CALL cudaMemcpy(GPUArray.GetData(), this->GetData(), this->SizeInBytes(), cudaMemcpyHostToDevice);
+        CUDA_CHECKED_CALL cudaMemcpyAsync(GPUArray.GetData(), this->GetData(), this->SizeInBytes(), cudaMemcpyHostToDevice);
+		CUDA_CHECKED_CALL cudaStreamSynchronize(0);
     }
 
 	HOST_DEVICE TSize GetAllocatedSize() const
@@ -309,7 +318,7 @@ public:
 	
 	HOST void Resize(TSize NewSize)
 	{
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		checkInfEqual(this->ArraySize, AllocatedSize);
 		check(this->ArrayData); // For the name
@@ -323,7 +332,7 @@ public:
 	}
 	HOST void ResizeUninitialized(TSize NewSize)
 	{
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		checkInfEqual(this->ArraySize, AllocatedSize);
 		check(this->ArrayData); // For the name
@@ -338,7 +347,7 @@ public:
 	
 	HOST void Shrink()
 	{
-		ZoneScoped;
+		PROFILE_FUNCTION();
 		
 		check(this->ArrayData);
 		check(this->ArraySize != 0);
@@ -353,4 +362,38 @@ public:
 
 protected:
 	TSize AllocatedSize = 0;
+};
+
+template<EMemoryType MemoryType, typename TSize = uint64>
+struct TBitArray
+{
+	TBitArray() = default;
+	TBitArray(const char* Name, TSize Size)
+		: Array(Name, Utils::DivideCeil(Size, 32))
+	{
+	}
+	
+	HOST_DEVICE bool operator[](TSize Index) const
+	{
+		return Array[Index / 32] & (1u << (Index % 32));
+	}
+	HOST_DEVICE void Set(TSize Index, bool Value)
+	{
+		if (Value)
+		{
+			Array[Index / 32] |= (1u << (Index % 32));
+		}
+		else
+		{
+			Array[Index / 32] &= ~(1u << (Index % 32));
+		}
+	}
+
+	HOST void MemSet(bool Value)
+	{
+		Array.MemSet(Value ? 0xFF : 0x00);
+	}
+
+private:
+	TStaticArray<uint32, MemoryType, TSize> Array;
 };

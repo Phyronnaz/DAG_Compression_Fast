@@ -346,7 +346,7 @@ GLuint UploadBin(const std::string& File, GLsizeiptr Count)
 FGLTFLoader::FGLTFLoader(const std::string& Path, const std::string& Filename)
 	: Path(Path)
 {
-	ZoneScoped;
+	PROFILE_FUNCTION();
 
 	LOG("Loading %s%s", Path.c_str(), Filename.c_str());
 	
@@ -360,7 +360,7 @@ FGLTFLoader::FGLTFLoader(const std::string& Path, const std::string& Filename)
 
 FScene FGLTFLoader::GetScene()
 {
-	ZoneScoped;
+	PROFILE_FUNCTION();
 	
 	FScene Result;
 	Root["bufferViews"].get_to(Result.BufferViews);

@@ -200,11 +200,16 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	, Scene(Scene)
 	, NodesToRender(GetNodesToRender(Scene))
 {
-	ZoneScoped;
+	PROFILE_FUNCTION();
 
 	check(SubGridSize > 0);
 	const GLuint VertexShader = CompileShader(GL_VERTEX_SHADER, GetFileContents("Shaders/VertexShader.glsl"));
-	const GLuint FragmentShader = CompileShader(GL_FRAGMENT_SHADER, AddDefine(GetFileContents("Shaders/FragmentShader.glsl"), "MORTON_BITS", sizeof(FMortonCode) == 4 ? "32" : "64"));
+	const GLuint FragmentShader = CompileShader(GL_FRAGMENT_SHADER,
+		AddDefine(
+			AddDefine(
+				GetFileContents("Shaders/FragmentShader.glsl"),
+				"MORTON_BITS", sizeof(FMortonCode) == 4 ? "32" : "64"),
+			"ENABLE_COLORS", STR(ENABLE_COLORS)));
 	const GLuint GeometryShader = CompileShader(GL_GEOMETRY_SHADER, GetFileContents("Shaders/GeometryShader.glsl"));
 	VoxelizeShader = LinkShaders(VertexShader, FragmentShader, GeometryShader);
 
@@ -240,7 +245,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 
 FVoxelizer::~FVoxelizer()
 {
-	ZoneScoped;
+	PROFILE_FUNCTION();
 	
 	glDeleteBuffers(1, &FragCtrBuffer);
 	glDeleteBuffers(1, &PositionSSBO);
@@ -253,7 +258,7 @@ FVoxelizer::~FVoxelizer()
 
 TStaticArray<FMortonCode, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 {
-	ZoneScoped;
+	PROFILE_FUNCTION();
 	
 	// Get ortho camera for given axis.
 	const FOrthographicView ViewX = GetCamera(AABB, EAxis::X);
@@ -311,7 +316,7 @@ TStaticArray<FMortonCode, EMemoryType::GPU> FVoxelizer::GenerateFragments(const 
 
 void FVoxelizer::Draw() const
 {
-	ZoneScoped;
+	PROFILE_FUNCTION();
 	
 	for (const auto& NodeToRender : NodesToRender) 
 	{

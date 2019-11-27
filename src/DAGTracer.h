@@ -27,7 +27,11 @@ public:
 		double3 rayDDx;
 		double3 rayDDy;
 	};
-	void ResolvePaths(const TracePathsParams& Params, const TStaticArray<uint32, EMemoryType::GPU>& Dag);
+	void ResolvePaths(
+		const TracePathsParams& Params, 
+		const TStaticArray<uint32, EMemoryType::GPU>& Dag, 
+		const TStaticArray<uint32, EMemoryType::GPU>& Colors, 
+		const TStaticArray<uint64, EMemoryType::GPU>& EnclosedLeaves);
 
 	template<typename T1, typename T2>
 	inline static TracePathsParams GetTraceParams(

@@ -1,21 +1,24 @@
 #pragma once
 
-#define ENABLE_CHECKS 1
+#define ENABLE_CHECKS 0
 #define DEBUG_GPU_ARRAYS 0
 
-#define LEVELS 16
+#define LEVELS 13
+#define TOP_LEVEL (LEVELS - 8)
 #define SUBDAG_LEVELS 12
 #define FRAGMENTS_MEMORY_IN_MILLIONS 160
 
-#define NUM_MERGE_THREADS 32
-#define PRINT_DEBUG_INFO 1
+#define NUM_MERGE_THREADS 1
+#define PRINT_DEBUG_INFO 0
 #define DEBUG_THRUST 0
 
 #define ENABLE_FORCEINLINE !ENABLE_CHECKS
 #define ENABLE_FLATTEN 0
 
+#define ENABLE_COLORS 1
+
 static_assert(SUBDAG_LEVELS <= LEVELS, "");
-static_assert(!DEBUG_GPU_ARRAYS || NUM_MERGE_THREADS == 0, "");
+static_assert(!DEBUG_GPU_ARRAYS || NUM_MERGE_THREADS == 0 || LEVELS == SUBDAG_LEVELS, "");
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -245,8 +248,53 @@ HOST_DEVICE T Cast(U Value)
 	{ \
 		char __String[1024]; \
 		const int32 __Size = sprintf(__String, Format, ##__VA_ARGS__); \
+		checkInfEqual(__Size, 1024); \
 		ZoneName(__String, __Size); \
 	}
+#endif
+
+#if 0
+#define PROFILE_SCOPE(Format, ...) ZoneScopedf(Format, ##__VA_ARGS__)
+#define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__)
+#else
+
+#include "nvToolsExt.h"
+#include "nvToolsExtCuda.h"
+
+struct FNVExtScope
+{
+	template<typename... TArgs>
+	FNVExtScope(const char* Format, TArgs... Args)
+	{
+		const int32 Size = sprintf(String, Format, Args...);
+		checkInfEqual(Size, 1024);
+		
+		eventAttrib.version = NVTX_VERSION;
+		eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+		eventAttrib.colorType = NVTX_COLOR_ARGB;
+		eventAttrib.color = 0xFF0000;
+		eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
+		eventAttrib.message.ascii = String;
+		nvtxRangePushEx(&eventAttrib);
+	}
+	~FNVExtScope()
+	{
+		nvtxRangePop();
+	}
+	
+    nvtxEventAttributes_t eventAttrib = {0};
+	char String[1024];
+};
+
+#define JOIN_IMPL(A, B) A ## B
+#define JOIN(A, B) JOIN_IMPL(A, B)
+
+#define PROFILE_SCOPE(Format, ...) FNVExtScope JOIN(ScopePerf, __LINE__)(Format, ##__VA_ARGS__);
+#define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__);
+
+#define MARK(Name) nvtxMarkA(Name)
+#define NAME_THREAD(Name) nvtxNameOsThreadA(GetCurrentThreadId(), Name);
+
 #endif
 
 using FMortonCode = uint64;

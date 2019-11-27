@@ -27,6 +27,7 @@ struct FCpuDag
 {
 	std::vector<FCpuLevel> Levels;
 	TStaticArray<uint64, EMemoryType::CPU> Leaves;
+	TStaticArray<uint32, EMemoryType::CPU> Colors;
 
 	inline void Free()
 	{
@@ -36,14 +37,22 @@ struct FCpuDag
 		}
 		Levels.clear();
 		Leaves.Free();
+		Colors.Free();
 	}
+};
+
+struct FFinalDag
+{
+	TStaticArray<uint32, EMemoryType::GPU> Dag;
+	TStaticArray<uint32, EMemoryType::GPU> Colors;
+	TStaticArray<uint64, EMemoryType::GPU> EnclosedLeaves;
 };
 
 namespace DAGCompression
 {
-	FCpuDag CreateDAG(const TStaticArray<FMortonCode, EMemoryType::GPU>& Fragments, int32 Depth);
+	FCpuDag CreateSubDAG(const TStaticArray<FMortonCode, EMemoryType::GPU>& Fragments);
 	FCpuDag MergeDAGs(std::vector<FCpuDag>&& CpuDags);
-	TStaticArray<uint32, EMemoryType::GPU> CreateFinalDAG(FCpuDag&& CpuDag);
+	FFinalDag CreateFinalDAG(FCpuDag&& CpuDag);
 	void FreeAll();
 
 	void Test();

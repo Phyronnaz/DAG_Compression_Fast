@@ -41,7 +41,7 @@ FMemory::~FMemory()
 
 void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 {
-	ZoneScopedf("Alloc %" PRIu64 "B on %s", Size, MemoryTypeToString(Type));
+	PROFILE_SCOPE("Alloc %" PRIu64 "B on %s", Size, MemoryTypeToString(Type));
 
 	checkAlways(Size != 0);
 	void* Ptr = nullptr;
@@ -87,7 +87,14 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 	else
 	{
 		check(Type == EMemoryType::CPU);
-		Ptr = std::malloc(Size);
+		const cudaError_t Error = cudaMallocHost(&Ptr, Size);
+		if (Error != cudaSuccess)
+		{
+			LOG("\n\n\n");
+			LOG("Fatal error when allocating %fMB of CPU memory!", Utils::ToMB(Size));
+			std::cout << GetStatsStringImpl() << std::endl;
+		}
+		CUDA_CHECKED_CALL Error;
 		TotalAllocatedCpuMemory += Size;
 		MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
@@ -104,7 +111,7 @@ void FMemory::FreeImpl(void* Ptr)
 	checkAlways(Allocations.find(Ptr) != Allocations.end());
 	auto& Alloc = Allocations[Ptr];
 	
-	ZoneScopedf("Free %" PRIu64 "B on %s", Alloc.Size, MemoryTypeToString(Alloc.Type));
+	PROFILE_SCOPE("Free %" PRIu64 "B on %s", Alloc.Size, MemoryTypeToString(Alloc.Type));
 
 	if (Alloc.Type == EMemoryType::GPU)
 	{
@@ -116,7 +123,7 @@ void FMemory::FreeImpl(void* Ptr)
 	else
 	{
 		check(Alloc.Type == EMemoryType::CPU);
-		std::free(Ptr);
+		CUDA_CHECKED_CALL cudaFreeHost(Ptr);
 		TotalAllocatedCpuMemory -= Alloc.Size;
 		MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 	}
@@ -132,18 +139,19 @@ void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 
 	//LOG("reallocating %s (%s)", OldAlloc.Name, TypeToString(OldAlloc.Type));
 
-	if (OldAlloc.Type == EMemoryType::GPU)
+	CUDA_CHECK_ERROR();
+	if (!bCopyData)
 	{
-		CUDA_CHECK_ERROR();
-		if (!bCopyData)
+		// Free ASAP
+		FreeImpl(OldPtr);
+	}
+	Ptr = MallocImpl(OldAlloc.Name, NewSize, OldAlloc.Type);
+	if (Ptr && bCopyData)
+	{
+		if (OldAlloc.Type == EMemoryType::GPU)
 		{
-			// Free ASAP
-			FreeImpl(OldPtr);
-		}
-		Ptr = MallocImpl(OldAlloc.Name, NewSize, OldAlloc.Type);
-		if (Ptr && bCopyData)
-		{
-			const cudaError_t Error = cudaMemcpy(Ptr, OldPtr, std::min(NewSize, OldAlloc.Size), cudaMemcpyDeviceToDevice);
+			cudaError_t Error = cudaMemcpyAsync(Ptr, OldPtr, std::min(NewSize, OldAlloc.Size), cudaMemcpyDeviceToDevice);
+			if (Error == cudaSuccess) Error = cudaStreamSynchronize(0);
 			if (Error != cudaSuccess)
 			{
 				LOG("\n\n\n");
@@ -152,26 +160,14 @@ void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 				CUDA_CHECKED_CALL Error;
 			}
 		}
-		if (bCopyData)
-		{
-			FreeImpl(OldPtr);
-		}
-	}
-	else
-	{
-		check(OldAlloc.Type == EMemoryType::CPU);
-		Allocations.erase(Ptr);
-		if (NewSize == 0)
-		{
-			std::free(Ptr);
-			Ptr = nullptr;
-		}
 		else
 		{
-			Ptr = std::realloc(Ptr, NewSize);
-			checkAlways(Ptr);
+			std::memcpy(Ptr, OldPtr, std::min(NewSize, OldAlloc.Size));
 		}
-		Allocations[Ptr] = { OldAlloc.Name, OldAlloc.Size, OldAlloc.Type };
+	}
+	if (bCopyData)
+	{
+		FreeImpl(OldPtr);
 	}
 }
 

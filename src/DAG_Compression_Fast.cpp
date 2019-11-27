@@ -3,6 +3,7 @@
 #undef main
 #include <iostream>
 #include <chrono>
+#include <cuda_profiler_api.h>
 #include "Utils/View.h"
 #include "GLTFLoader.h"
 #include "DAGTracer.h"
@@ -185,6 +186,9 @@ struct FAppState
 		if (KeyState[SDL_SCANCODE_8]) { DebugLevel = 7; }
 		if (KeyState[SDL_SCANCODE_9]) { DebugLevel = 8; }
 		if (KeyState[SDL_SCANCODE_0]) { DebugLevel = 0xFFFFFFFF; }
+		if (KeyState[SDL_SCANCODE_L]) { DebugLevel = 0xFFFFFFFE; }
+		if (KeyState[SDL_SCANCODE_C]) { DebugLevel = 0xFFFFFFFD; }
+		if (KeyState[SDL_SCANCODE_N]) { DebugLevel = 0xFFFFFFFC; }
 		
 
 		const uint32 MouseState = SDL_GetMouseState(&NewMouse.x, &NewMouse.y);
@@ -243,11 +247,11 @@ int main()
 	const uint32 Height = ScreenDim.y;
 
 	FAABB AABB;
-	TStaticArray<uint32, EMemoryType::GPU> Dag;
+	FFinalDag Dag;
 
 #if 1
 	{
-		ZoneScopedN("Main");
+		PROFILE_SCOPE("Main");
 
 		const double LoadSceneStartTime = Utils::Seconds();
 		FGLTFLoader Loader("GLTF/Sponza/glTF/", "Sponza.gltf");
@@ -270,6 +274,10 @@ int main()
 		
 		const double GlobalStartTime = Utils::Seconds();
 		FrameMark;
+
+		cudaProfilerStart();
+
+		NAME_THREAD("Main");
 		
 		double TotalGenerateFragmentsTime = 0;
 		double TotalCreateDAGTime = 0;
@@ -277,12 +285,12 @@ int main()
 
 		std::vector<FCpuDag> DagsToMerge;
 		{
-			ZoneScopedN("Create Dags");
+			PROFILE_SCOPE("Create Dags");
 			
 			FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
 			for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
 			{
-				ZoneScopedf("Sub Dag %d", SubDagIndex);
+				PROFILE_SCOPE("Sub Dag %d", SubDagIndex);
 
 				const double GenerateFragmentsStartTime = Utils::Seconds();
 				const auto Fragments = Voxelizer.GenerateFragments(AABBs[SubDagIndex]);
@@ -292,7 +300,7 @@ int main()
 				LOG_DEBUG("GenerateFragments took %fs", GenerateFragmentsElapsed);
 
 				const double CreateDAGStartTime = Utils::Seconds();
-				auto CpuDag = DAGCompression::CreateDAG(Fragments, SUBDAG_LEVELS);
+				auto CpuDag = DAGCompression::CreateSubDAG(Fragments);
 				const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
 				TotalCreateDAGTime += CreateDAGElapsed;
 				LOG_DEBUG("CreateDAG took %fs", CreateDAGElapsed);
@@ -332,6 +340,8 @@ int main()
 		const double TotalElapsed = Utils::Seconds() - GlobalStartTime;
 		FrameMark;
 
+		cudaProfilerStop();
+		
 		LOG("");
 		LOG("############################################################");
 		LOG("Total elapsed: %fs", TotalElapsed);
@@ -343,13 +353,6 @@ int main()
 		LOG("Throughput: %f BV/s", TotalFragments / TotalElapsed / 1.e9);
 		LOG("############################################################");
 		LOG("");
-
-		{
-			const double FreeAllStartTime = Utils::Seconds();
-			DAGCompression::FreeAll();
-			const double FreeAllElapsed = Utils::Seconds() - FreeAllStartTime;
-			LOG("FreeAll took %fs", FreeAllElapsed);
-		}
 		
 		LOG("Peak CPU memory usage: %f MB", Utils::ToMB(FMemory::GetCpuMaxAllocatedMemory()));
 		LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
@@ -357,6 +360,11 @@ int main()
 		std::cout << FMemory::GetStatsString();
 		
 		FreeScene(Scene);
+
+		Dag.Dag.Free();
+		Dag.Colors.Free();
+		Dag.EnclosedLeaves.Free();
+		return 0;
 	}
 #else
 	FFileReader Reader("C:/ROOT/DAG_Compression/cache/result.basic_dag.dag.bin");
@@ -388,7 +396,7 @@ int main()
 			App.HandleEvents();
 
 			auto Params = FDAGTracer::GetTraceParams(App.DebugLevel, App.Camera, Width, Height, AABB);
-			DagTracer.ResolvePaths(Params, Dag);
+			DagTracer.ResolvePaths(Params, Dag.Dag, Dag.Colors, Dag.EnclosedLeaves);
 
 			glViewport(0, 0, ScreenDim.x, ScreenDim.y);
 			glUseProgram(CopyShader);
@@ -403,7 +411,9 @@ int main()
 		}
 	}
 
-	Dag.Free();
+	Dag.Dag.Free();
+	Dag.Colors.Free();
+	Dag.EnclosedLeaves.Free();
 
 	SDL_GL_DeleteContext(MainContext);
 	SDL_DestroyWindow(MainWindow);
