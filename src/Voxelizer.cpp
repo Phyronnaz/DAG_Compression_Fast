@@ -208,7 +208,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 		AddDefine(
 			AddDefine(
 				GetFileContents("Shaders/FragmentShader.glsl"),
-				"MORTON_BITS", sizeof(FMortonCode) == 4 ? "32" : "64"),
+				"MORTON_BITS", "64"),
 			"ENABLE_COLORS", STR(ENABLE_COLORS)));
 	const GLuint GeometryShader = CompileShader(GL_GEOMETRY_SHADER, GetFileContents("Shaders/GeometryShader.glsl"));
 	VoxelizeShader = LinkShaders(VertexShader, FragmentShader, GeometryShader);
@@ -225,7 +225,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	// Data buffer (pos).
 	glGenBuffers(1, &PositionSSBO);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, PositionSSBO);
-	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(FMortonCode), nullptr, GL_STATIC_DRAW);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64), nullptr, GL_STATIC_DRAW);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
 	// Dummy framebuffer.
@@ -240,7 +240,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	CUDA_CHECKED_CALL cudaGraphicsMapResources(1, &CudaPositionResource);
 	CUDA_CHECKED_CALL cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&Positions), &NumBytes, CudaPositionResource);
 
-	FMemory::RegisterCustomAlloc(Positions, "Fragments", TexDim * sizeof(FMortonCode), EMemoryType::GPU);
+	FMemory::RegisterCustomAlloc(Positions, "Fragments", TexDim * sizeof(uint64), EMemoryType::GPU);
 }
 
 FVoxelizer::~FVoxelizer()
@@ -256,7 +256,7 @@ FVoxelizer::~FVoxelizer()
 	FMemory::UnregisterCustomAlloc(Positions);
 }
 
-TStaticArray<FMortonCode, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB) const
+TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 {
 	PROFILE_FUNCTION();
 	

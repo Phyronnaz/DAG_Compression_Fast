@@ -1,14 +1,14 @@
 #pragma once
 
-#define ENABLE_CHECKS 0
+#define ENABLE_CHECKS 1
 #define DEBUG_GPU_ARRAYS 0
 
-#define LEVELS 13
+#define LEVELS 12
 #define TOP_LEVEL (LEVELS - 8)
 #define SUBDAG_LEVELS 12
 #define FRAGMENTS_MEMORY_IN_MILLIONS 160
 
-#define NUM_MERGE_THREADS 1
+#define NUM_MERGE_THREADS 0
 #define PRINT_DEBUG_INFO 0
 #define DEBUG_THRUST 0
 
@@ -94,14 +94,6 @@ using uint64 = std::uint64_t;
 #define __device__
 #define __global__
 #define __device_builtin__
-
-struct TmpIntVector
-{
-	int x, y, z;
-};
-TmpIntVector blockIdx;
-TmpIntVector blockDim;
-TmpIntVector threadIdx;
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -110,6 +102,7 @@ TmpIntVector threadIdx;
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "cnmem.h"
 
 #if ENABLE_CHECKS
 #define checkf(expr, msg, ...) if(!(expr)) { printf("Assertion failed " __FILE__ ":%d: %s: " msg "\n", __LINE__, #expr, ##__VA_ARGS__); DEBUG_BREAK(); }
@@ -135,7 +128,7 @@ TmpIntVector threadIdx;
 #if PRINT_DEBUG_INFO
 #define LOG_DEBUG(msg, ...) LOG(msg, __VA_ARGS__)
 #else
-#define LOG_DEBUG(msg, ...)
+#define LOG_DEBUG(msg, ...) if(0) { LOG(msg, __VA_ARGS__); }
 #endif
 
 #define STR_HELPER(x) #x
@@ -176,7 +169,10 @@ TmpIntVector threadIdx;
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
+#define DEFAULT_STREAM cudaStream_t(0)
+
 #define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
+#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL cudaStreamSynchronize(0)
 #define CUDA_CHECK_ERROR() \
 	{ \
 		CUDA_CHECKED_CALL cudaStreamSynchronize(0); \
@@ -200,7 +196,7 @@ namespace detail
 		{
 			if (Error != cudaSuccess)
 			{
-				std::fprintf(stderr, "ERROR %s:%d: cuda error \"%s\"\n", File, Line, cudaGetErrorString(Error));
+				std::fprintf(stderr, "ERROR %s:%d: CUDA error \"%s\"\n", File, Line, cudaGetErrorString(Error));
 				std::abort();
 			}
 			return Error;
@@ -212,7 +208,19 @@ namespace detail
 			{
 				const char* Message = nullptr;
 				cuGetErrorString(Error, &Message);
-				std::fprintf(stderr, "ERROR [driver] %s:%d: cuda error \"%s\"\n", File, Line, Message);
+				std::fprintf(stderr, "ERROR [driver] %s:%d: CUDA error \"%s\"\n", File, Line, Message);
+				std::abort();
+			}
+
+			return Error;
+		}
+
+		FORCEINLINE cnmemStatus_t operator=(cnmemStatus_t Error) const
+		{
+			if (Error != CNMEM_STATUS_SUCCESS) 
+			{
+				const char* Message = cnmemGetErrorString(Error);
+				std::fprintf(stderr, "ERROR %s:%d: CNMEM error \"%s\"\n", File, Line, Message);
 				std::abort();
 			}
 
@@ -296,7 +304,3 @@ struct FNVExtScope
 #define NAME_THREAD(Name) nvtxNameOsThreadA(GetCurrentThreadId(), Name);
 
 #endif
-
-using FMortonCode = uint64;
-
-static_assert(3 * SUBDAG_LEVELS <= sizeof(FMortonCode) * 8, "");

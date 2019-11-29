@@ -70,8 +70,6 @@ struct TStaticArray
 
 	HOST TStaticArray<TElementType, EMemoryType::GPU, TSize> CreateGPU() const
 	{
-		PROFILE_FUNCTION();
-		
 		static_assert(MemoryType == EMemoryType::CPU, "");
 		if (!IsValid())
 		{
@@ -83,8 +81,6 @@ struct TStaticArray
     }
 	HOST TStaticArray<TElementType, EMemoryType::CPU, TSize> CreateCPU() const
 	{
-		PROFILE_FUNCTION();
-		
 		static_assert(MemoryType == EMemoryType::GPU, "");
 		if (!IsValid())
 		{
@@ -97,8 +93,6 @@ struct TStaticArray
 
     HOST void CopyToGPU(TStaticArray<TElementType, EMemoryType::GPU, TSize>& GpuArray) const
     {
-		PROFILE_FUNCTION();
-		
 		static_assert(MemoryType == EMemoryType::CPU, "");
         check(GpuArray.Num() == Num());
         CUDA_CHECKED_CALL cudaMemcpyAsync(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
@@ -106,8 +100,6 @@ struct TStaticArray
     }
     HOST void CopyToCPU(TStaticArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
     {
-		PROFILE_FUNCTION();
-		
 		static_assert(MemoryType == EMemoryType::GPU, "");
         check(CpuArray.Num() == Num());
         CUDA_CHECKED_CALL cudaMemcpyAsync(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);

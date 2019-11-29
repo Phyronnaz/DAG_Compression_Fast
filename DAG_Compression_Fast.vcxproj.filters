@@ -37,6 +37,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\DAG_Compression_Fast.cpp" />
+    <ClCompile Include="src\cnmem.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\Core.h">
@@ -1064,6 +1067,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\moderngpu\util.hxx">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GpuPrimitives.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Threadpool.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\cnmem.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

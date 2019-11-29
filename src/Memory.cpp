@@ -41,105 +41,117 @@ FMemory::~FMemory()
 
 void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 {
-	PROFILE_SCOPE("Alloc %" PRIu64 "B on %s", Size, MemoryTypeToString(Type));
-
+	PROFILE_FUNCTION();
+	CUDA_CHECK_ERROR();
+	
 	checkAlways(Size != 0);
 	void* Ptr = nullptr;
-	if (Type == EMemoryType::GPU)
 	{
-#if DEBUG_GPU_ARRAYS
-		cudaError_t Error = cudaMallocManaged(&Ptr, Size);
-#else
-		cudaError_t Error = cudaMalloc(&Ptr, Size);
-#endif
-
-		if (Error == cudaErrorMemoryAllocation)
+		PROFILE_SCOPE("Alloc %" PRIu64 "B on %s", Size, MemoryTypeToString(Type));
+		if (Type == EMemoryType::GPU)
 		{
-			LOG("Out of memory, freeing memory and retrying...");
-			checkAlways(Error == cudaGetLastError());
-			for (auto& Callback : OnOutOfMemoryFallbacks)
+			const auto Error = cnmemMalloc(&Ptr, Size, DEFAULT_STREAM);
+			if (Error != CNMEM_STATUS_SUCCESS)
 			{
-				Callback([this](void* InPtr) { FreeImpl(InPtr); });
+				LOG("\n\n\n");
+				LOG("Fatal error when allocating %fMB of GPU memory!", Utils::ToMB(Size));
+				std::cout << GetStatsStringImpl() << std::endl;
+				FILE* file = fopen("memory_state.log", "w");
+				CUDA_CHECKED_CALL cnmemPrintMemoryState(file, DEFAULT_STREAM);
 			}
-
-#if DEBUG_GPU_ARRAYS
-			Error = cudaMallocManaged(&Ptr, Size);
-#else
-			Error = cudaMalloc(&Ptr, Size);
-#endif
+			CUDA_CHECKED_CALL Error;
 		}
-		
-		if (Error != cudaSuccess)
+		else
 		{
-			LOG("\n\n\n");
-			LOG("Fatal error when allocating %fMB of GPU memory!", Utils::ToMB(Size));
-			std::cout << GetStatsStringImpl() << std::endl;
-
-			for (auto& Callback : OnOutOfMemoryEvents)
+			check(Type == EMemoryType::CPU);
+			const auto Error = cudaMallocHost(&Ptr, Size);
+			if (Error != cudaSuccess)
 			{
-				Callback();
+				LOG("\n\n\n");
+				LOG("Fatal error when allocating %fMB of CPU memory!", Utils::ToMB(Size));
+				std::cout << GetStatsStringImpl() << std::endl;
 			}
+			CUDA_CHECKED_CALL Error;
 		}
-		CUDA_CHECKED_CALL Error;
-		TotalAllocatedGpuMemory += Size;
-		MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
 	}
-	else
+
 	{
-		check(Type == EMemoryType::CPU);
-		const cudaError_t Error = cudaMallocHost(&Ptr, Size);
-		if (Error != cudaSuccess)
+        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		if (Type == EMemoryType::GPU)
 		{
-			LOG("\n\n\n");
-			LOG("Fatal error when allocating %fMB of CPU memory!", Utils::ToMB(Size));
-			std::cout << GetStatsStringImpl() << std::endl;
+			TotalAllocatedGpuMemory += Size;
+			MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
 		}
-		CUDA_CHECKED_CALL Error;
-		TotalAllocatedCpuMemory += Size;
-		MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
+		else
+		{
+			TotalAllocatedCpuMemory += Size;
+			MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
+		}
+		checkAlways(Allocations.find(Ptr) == Allocations.end());
+		Allocations[Ptr] = { Name, Size, Type };
 	}
-	checkAlways(Allocations.find(Ptr) == Allocations.end());
-	Allocations[Ptr] = { Name, Size, Type };
 
 	return Ptr;
 }
 
 void FMemory::FreeImpl(void* Ptr)
 {
-    if (!Ptr) return;
-
-	checkAlways(Allocations.find(Ptr) != Allocations.end());
-	auto& Alloc = Allocations[Ptr];
+	PROFILE_FUNCTION();
+	CUDA_CHECK_ERROR();
 	
-	PROFILE_SCOPE("Free %" PRIu64 "B on %s", Alloc.Size, MemoryTypeToString(Alloc.Type));
+	if (!Ptr) return;
 
-	if (Alloc.Type == EMemoryType::GPU)
+	FAlloc Alloc;
 	{
-		CUDA_CHECK_ERROR();
-		CUDA_CHECKED_CALL cudaFree(Ptr);
-		TotalAllocatedGpuMemory -= Alloc.Size;
-		MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
+		std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		checkAlways(Allocations.find(Ptr) != Allocations.end());
+		Alloc = Allocations[Ptr];
+		Allocations.erase(Ptr);
 	}
-	else
+
 	{
-		check(Alloc.Type == EMemoryType::CPU);
-		CUDA_CHECKED_CALL cudaFreeHost(Ptr);
-		TotalAllocatedCpuMemory -= Alloc.Size;
-		MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
+		PROFILE_SCOPE("Free %" PRIu64 "B on %s", Alloc.Size, MemoryTypeToString(Alloc.Type));
+		if (Alloc.Type == EMemoryType::GPU)
+		{
+			CUDA_CHECK_ERROR();
+			CUDA_CHECKED_CALL cnmemFree(Ptr, DEFAULT_STREAM);
+		}
+		else
+		{
+			check(Alloc.Type == EMemoryType::CPU);
+			CUDA_CHECKED_CALL cudaFreeHost(Ptr);
+		}
 	}
-	Allocations.erase(Ptr);
+
+	{
+		std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		if (Alloc.Type == EMemoryType::GPU)
+		{
+			TotalAllocatedGpuMemory -= Alloc.Size;
+			MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
+		}
+		else 
+		{
+			TotalAllocatedCpuMemory -= Alloc.Size;
+			MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
+		}
+	}
 }
 
 void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 {
-	checkAlways(Ptr);
-	checkAlways(Allocations.find(Ptr) != Allocations.end());
-	const auto OldPtr = Ptr;
-	const auto OldAlloc = Allocations[Ptr];
-
-	//LOG("reallocating %s (%s)", OldAlloc.Name, TypeToString(OldAlloc.Type));
-
+	PROFILE_FUNCTION();
 	CUDA_CHECK_ERROR();
+
+	const auto OldPtr = Ptr;
+	FAlloc OldAlloc;
+	{
+		std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		checkAlways(Ptr);
+		checkAlways(Allocations.find(Ptr) != Allocations.end());
+		OldAlloc = Allocations[Ptr];
+	}
+
 	if (!bCopyData)
 	{
 		// Free ASAP
@@ -173,6 +185,9 @@ void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 
 void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, EMemoryType Type)
 {
+	PROFILE_FUNCTION();
+
+	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 	checkAlways(Ptr);
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	checkAlways(Size != 0);
@@ -193,6 +208,9 @@ void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, 
 
 void FMemory::UnregisterCustomAllocImpl(void* Ptr)
 {
+	PROFILE_FUNCTION();
+
+	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 	checkAlways(Allocations.find(Ptr) != Allocations.end());
 	auto& Alloc = Allocations[Ptr];
 	if (Alloc.Type == EMemoryType::GPU)
@@ -208,8 +226,9 @@ void FMemory::UnregisterCustomAllocImpl(void* Ptr)
 	Allocations.erase(Ptr);
 }
 
-FMemory::Element FMemory::GetAllocInfoImpl(void* Ptr) const
+FMemory::FAlloc FMemory::GetAllocInfoImpl(void* Ptr) const
 {
+	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
 	checkAlways(Ptr);
     checkAlways(Allocations.find(Ptr) != Allocations.end());
     return Allocations.at(Ptr);
@@ -217,6 +236,8 @@ FMemory::Element FMemory::GetAllocInfoImpl(void* Ptr) const
 
 std::string FMemory::GetStatsStringImpl() const
 {
+	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+	
     struct AllocCount
     {
         uint64 Size = 0;
@@ -249,7 +270,7 @@ std::string FMemory::GetStatsStringImpl() const
 	StringStream << std::endl;
 	StringStream << "Detailed allocations:" << std::endl;
 	
-    std::vector<std::pair<void*, Element>> AllocationsList(Allocations.begin(), Allocations.end());
+    std::vector<std::pair<void*, FAlloc>> AllocationsList(Allocations.begin(), Allocations.end());
     std::sort(AllocationsList.begin(), AllocationsList.end(), [](auto& A, auto& B) { return A.second.Size > B.second.Size; });
     for (auto& [Ptr, Alloc] : AllocationsList)
 	{

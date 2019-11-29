@@ -22,14 +22,14 @@ private:
 	GLuint DummyFBO = 0;
 	
 	cudaGraphicsResource* CudaPositionResource = nullptr;
-	FMortonCode* Positions = nullptr;
+	uint64* Positions = nullptr;
 
 public:
 	explicit FVoxelizer(int32 SubGridSize, const FScene& Scene);
 	~FVoxelizer();
 
 	// Array is only valid while the voxelizer object hasn't been destroyed!
-	TStaticArray<FMortonCode, EMemoryType::GPU> GenerateFragments(const FAABB& AABB) const;
+	TStaticArray<uint64, EMemoryType::GPU> GenerateFragments(const FAABB& AABB) const;
 
 private:
 	void Draw() const;

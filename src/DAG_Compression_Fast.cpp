@@ -241,6 +241,29 @@ uint64_t mortonEncode64(uint32_t x, uint32_t y, uint32_t z)
 
 int main()
 {
+	struct FScopedCNMEM
+	{
+		FScopedCNMEM()
+		{
+			PROFILE_FUNCTION();
+			
+			cnmemDevice_t Device;
+			std::memset(&Device, 0, sizeof(Device));
+			Device.size = size_t(5) * (size_t(1) << 30);
+			uint32 Flags = CNMEM_FLAGS_DEFAULT | CNMEM_FLAGS_CANNOT_GROW | CNMEM_FLAGS_CANNOT_STEAL;
+#if DEBUG_GPU_ARRAYS
+			Flags |= CNMEM_FLAGS_MANAGED;
+#endif
+			CUDA_CHECKED_CALL cnmemInit(1, &Device, Flags);
+		}
+		~FScopedCNMEM()
+		{
+			PROFILE_FUNCTION();
+			CUDA_CHECKED_CALL cnmemFinalize();
+		}
+	};
+	FScopedCNMEM CNMEM;
+	
 	Init();
 
 	const uint32 Width = ScreenDim.x;
@@ -293,7 +316,7 @@ int main()
 				PROFILE_SCOPE("Sub Dag %d", SubDagIndex);
 
 				const double GenerateFragmentsStartTime = Utils::Seconds();
-				const auto Fragments = Voxelizer.GenerateFragments(AABBs[SubDagIndex]);
+				auto Fragments = Voxelizer.GenerateFragments(AABBs[SubDagIndex]);
 				const double GenerateFragmentsElapsed = Utils::Seconds() - GenerateFragmentsStartTime;
 				TotalGenerateFragmentsTime += GenerateFragmentsElapsed;
 				TotalFragments += Fragments.Num();
@@ -361,10 +384,12 @@ int main()
 		
 		FreeScene(Scene);
 
+#if 0
 		Dag.Dag.Free();
 		Dag.Colors.Free();
 		Dag.EnclosedLeaves.Free();
 		return 0;
+#endif
 	}
 #else
 	FFileReader Reader("C:/ROOT/DAG_Compression/cache/result.basic_dag.dag.bin");
