@@ -7,80 +7,83 @@
 
 enum class EMemoryType
 {
-    GPU,
-    CPU
+	GPU,
+	CPU
 };
 
 class FMemory
 {
 public:
-    struct FAlloc
-    {
-        const char* Name = nullptr;
-        uint64 Size = uint64(-1);
-        EMemoryType Type = EMemoryType::CPU;
-    };
-	
-    template<typename T>
-    static T* Malloc(const char* Name, uint64 Size, EMemoryType Type)
+	struct FAlloc
 	{
-        checkAlways(Size % sizeof(T) == 0);
-        return reinterpret_cast<T*>(Singleton.MallocImpl(Name, Size, Type));
-    }
-    template<typename T>
-    static void Free(T* Ptr)
-    {
-        Singleton.FreeImpl(reinterpret_cast<void*>(Ptr));
-    }
-    template<typename T>
-    static void Realloc(T*& Ptr, uint64 NewSize, bool bCopyData = true)
-    {
+		const char* Name = nullptr;
+		uint64 Size = uint64(-1);
+		EMemoryType Type = EMemoryType::CPU;
+	};
+
+	template<typename T>
+	static T* Malloc(const char* Name, uint64 Size, EMemoryType Type)
+	{
+		CUDA_SYNCHRONIZE_STREAM();
+		checkAlways(Size % sizeof(T) == 0);
+		return reinterpret_cast<T*>(Singleton.MallocImpl(Name, Size, Type));
+	}
+	template<typename T>
+	static void Free(T* Ptr)
+	{
+		CUDA_SYNCHRONIZE_STREAM();
+		Singleton.FreeImpl(reinterpret_cast<void*>(Ptr));
+	}
+	template<typename T>
+	static void Realloc(T*& Ptr, uint64 NewSize, bool bCopyData = true)
+	{
+		CUDA_SYNCHRONIZE_STREAM();
 		void* Copy = reinterpret_cast<void*>(Ptr);
-        Singleton.ReallocImpl(Copy, NewSize, bCopyData);
+		Singleton.ReallocImpl(Copy, NewSize, bCopyData);
 		Ptr = reinterpret_cast<T*>(Copy);
-    }
-    template<typename T>
-    static void RegisterCustomAlloc(T* Ptr, const char* Name, uint64 Size, EMemoryType Type)
-    {
-        checkAlways(Size % sizeof(T) == 0);
-        Singleton.RegisterCustomAllocImpl(reinterpret_cast<void*>(Ptr), Name, Size, Type);
-    }
-    template<typename T>
-    static void UnregisterCustomAlloc(T* Ptr)
-    {
-        Singleton.UnregisterCustomAllocImpl(reinterpret_cast<void*>(Ptr));
-    }
-    template<typename T>
-    static FAlloc GetAllocInfo(const T* Ptr)
-    {
-        return Singleton.GetAllocInfoImpl(reinterpret_cast<void*>(const_cast<T*>(Ptr)));
-    }
-    static std::string GetStatsString()
-    {
-        return Singleton.GetStatsStringImpl();
-    }
+	}
+	template<typename T>
+	static void RegisterCustomAlloc(T* Ptr, const char* Name, uint64 Size, EMemoryType Type)
+	{
+		checkAlways(Size % sizeof(T) == 0);
+		Singleton.RegisterCustomAllocImpl(reinterpret_cast<void*>(Ptr), Name, Size, Type);
+	}
+	template<typename T>
+	static void UnregisterCustomAlloc(T* Ptr)
+	{
+		Singleton.UnregisterCustomAllocImpl(reinterpret_cast<void*>(Ptr));
+	}
+	template<typename T>
+	static FAlloc GetAllocInfo(const T* Ptr)
+	{
+		return Singleton.GetAllocInfoImpl(reinterpret_cast<void*>(const_cast<T*>(Ptr)));
+	}
+	static std::string GetStatsString()
+	{
+		return Singleton.GetStatsStringImpl();
+	}
 
 public:
-    inline static uint64 GetCpuAllocatedMemory()
-    {
-        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
-        return Singleton.TotalAllocatedCpuMemory;
-    }
-    inline static uint64 GetGpuAllocatedMemory()
-    {
-        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
-        return Singleton.TotalAllocatedGpuMemory;
-    }
-    inline static uint64 GetCpuMaxAllocatedMemory()
-    {
-        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
-        return Singleton.MaxTotalAllocatedCpuMemory;
-    }
-    inline static uint64 GetGpuMaxAllocatedMemory()
-    {
-        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
-        return Singleton.MaxTotalAllocatedGpuMemory;
-    }
+	inline static uint64 GetCpuAllocatedMemory()
+	{
+		FScopeLock Lock(Singleton.MemoryMutex);
+		return Singleton.TotalAllocatedCpuMemory;
+	}
+	inline static uint64 GetGpuAllocatedMemory()
+	{
+		FScopeLock Lock(Singleton.MemoryMutex);
+		return Singleton.TotalAllocatedGpuMemory;
+	}
+	inline static uint64 GetCpuMaxAllocatedMemory()
+	{
+		FScopeLock Lock(Singleton.MemoryMutex);
+		return Singleton.MaxTotalAllocatedCpuMemory;
+	}
+	inline static uint64 GetGpuMaxAllocatedMemory()
+	{
+		FScopeLock Lock(Singleton.MemoryMutex);
+		return Singleton.MaxTotalAllocatedGpuMemory;
+	}
 
 public:
 	template<typename T>
@@ -89,16 +92,16 @@ public:
 		PROFILE_FUNCTION();
 
 		CUDA_CHECK_ERROR();
-		
+
 		thread_local T* CPU = nullptr;
 		if (!CPU)
 		{
 			CUDA_CHECKED_CALL cudaMallocHost(reinterpret_cast<void**>(&CPU), sizeof(T));
 		}
-		CUDA_CHECKED_CALL cudaMemcpyAsync(CPU, GPUPtr, sizeof(T), cudaMemcpyDeviceToHost);
+		CudaMemcpy(CPU, GPUPtr, sizeof(T), cudaMemcpyDeviceToHost);
 
 		CUDA_CHECK_ERROR();
-		
+
 		const T Value = *CPU;
 		return Value;
 	}
@@ -108,22 +111,30 @@ public:
 		PROFILE_FUNCTION();
 
 		CUDA_CHECK_ERROR();
-		
+
 		thread_local T* CPU = nullptr;
 		if (!CPU)
 		{
 			CUDA_CHECKED_CALL cudaMallocHost(reinterpret_cast<void**>(&CPU), sizeof(T));
 		}
 		*CPU = Value;
-		CUDA_CHECKED_CALL cudaMemcpyAsync(GPUPtr, CPU, sizeof(T), cudaMemcpyHostToDevice);
+		CudaMemcpy(GPUPtr, CPU, sizeof(T), cudaMemcpyHostToDevice);
 
 		CUDA_CHECK_ERROR();
 	}
 
-private:
-    FMemory() = default;
-    ~FMemory();
+	template<typename T>
+	static void CudaMemcpy(T* Dst, const T* Src, uint64 Size, cudaMemcpyKind MemcpyKind)
+	{
+		check(Size % sizeof(T) == 0);
+		Singleton.CudaMemcpyImpl(reinterpret_cast<uint8*>(Dst), reinterpret_cast<const uint8*>(Src), Size, MemcpyKind);
+	}
 
+private:
+	FMemory() = default;
+	~FMemory();
+	
+	void CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemcpyKind MemcpyKind);
     void* MallocImpl(const char* Name, uint64 Size, EMemoryType Type);
     void FreeImpl(void* Ptr);
 	void ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData);
@@ -132,7 +143,7 @@ private:
 	FAlloc GetAllocInfoImpl(void* Ptr) const;
     std::string GetStatsStringImpl() const;
 
-    mutable std::mutex Mutex;
+    mutable TracyLockable(std::mutex, MemoryMutex)
     size_t TotalAllocatedGpuMemory = 0;
     size_t TotalAllocatedCpuMemory = 0;
     size_t MaxTotalAllocatedGpuMemory = 0;

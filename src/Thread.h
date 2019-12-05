@@ -6,6 +6,7 @@
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <unordered_set>
 
 template<typename T>
 struct TOptional
@@ -37,95 +38,116 @@ struct FEmpty
 };
 
 // Will loop until GetInputFunction returns an invalid input
-template<typename TInput, typename TResult>
+template<typename TInput, typename TResult, typename TQuery>
 class TThread
 {
 public:
 	TThread(
 		const char* Name,
-		std::function<TOptional<TInput>()> GetInputFunction,
-		std::function<TResult(TInput)> ProcessFunction,
-		uint32 ResultsToCache)
+		std::function<TInput(TQuery)> GetInputFunction,
+		std::function<TResult(TQuery, TInput)> ProcessFunction,
+		uint32 NumThreads,
+		std::function<void()> InitThread = []() {},
+		std::function<void()> DestroyThread = []() {})
 		: Name(Name)
 		, GetInputFunction(GetInputFunction)
 		, ProcessFunction(ProcessFunction)
-		, ResultsToCache(ResultsToCache)
+		, InitThread(InitThread)
+		, DestroyThread(DestroyThread)
 	{
-		check(ResultsToCache >= 1);
-		Threads.emplace_back([this]() { RunThread(); }); // TODO should add ResultsToCache threads
+		check(NumThreads >= 1);
+		for (uint32 Index = 0; Index < NumThreads; Index++)
+		{
+			Threads.emplace_back([this, Index]() { RunThread(Index); });
+		}
 	}
 	~TThread()
 	{
-		check(StopAtomic);
+		check(QueriesToProcess.empty());
+		check(ProcessedQueries.empty());
+		if (!StopAtomic)
+		{
+			Stop();
+		}
 		if (!Joined)
 		{
 			Join();
 		}
 	}
 
-	template<int32 Count>
-	inline TOptional<TStaticArray<TResult, Count>> GetResult()
+	inline TResult GetResult_DoNotStartQuery(TQuery Query)
 	{
-		PROFILE_FUNCTION();
+		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
 
-		check(ResultsToCache >= Count);
+		TOptional<TResult> Result;
 		
-		TOptional<TStaticArray<TResult, Count>> Result;
-		while (true)
+		const auto Check = [&]()
 		{
+			check(!StopAtomic);
+			FScopeLock Lock(ProcessedQueriesMutex);
+			const auto ResultPtr = ProcessedQueries.find(Query);
+			if (ResultPtr != ProcessedQueries.end())
 			{
-				std::lock_guard<std::mutex> Guard(ResultsMutex);
-				if (Results.size() >= Count)
-				{
-					TStaticArray<TResult, Count> TempResult;
-					for (int32 Index = 0; Index < Count; Index++)
-					{
-						TempResult[Index] = Results.front();
-						Results.pop();
-					}
-					Result = TempResult;
-					ProcessWakeup.notify_all();
-					break;
-				}
+				Result = ResultPtr->second;
+				ProcessedQueries.erase(ResultPtr);
 			}
+			return Result.IsValid();
+		};
 
-			// Do that after checking if there are still some results
-			if (StopAtomic)
-			{
-				check(Results.empty());
-				break;
-			}
-
-			PROFILE_SCOPE_COLOR(COLOR_YELLOW, "Wait for result");
-			const auto NeedToWakeup = [this]()
-			{
-				if (StopAtomic) return true;
-				std::lock_guard<std::mutex> Guard(ResultsMutex);
-				return Results.size() >= Count;
-			};
-			std::unique_lock<std::mutex> Lock(ProcessFinishedMutex);
-			while (!NeedToWakeup()) ProcessFinished.wait_for(Lock, std::chrono::milliseconds(1));
-		}
-		return Result;
+		FUniqueLock Lock(ProcessFinishedMutex);
+		while (!Check()) ProcessFinished.wait_for(Lock, std::chrono::milliseconds(10));
+		
+		return Result.GetValue();
 	}
-	inline TOptional<TResult> GetSingleResult()
+	template<uint32 Count>
+	inline void StartQueries(TStaticArray<TQuery, Count> Queries)
 	{
-		auto Result = GetResult<1>();
-		if (Result.IsValid())
+		FScopeLock Lock(QueriesToProcessMutex);
+		for (auto& Query : Queries)
 		{
-			return Result.GetValue()[0];
+			if (AlreadyQueuedQueries.find(Query) == AlreadyQueuedQueries.end())
+			{
+				AlreadyQueuedQueries.insert(Query);
+				QueriesToProcess.push(Query);
+			}
 		}
-		else
-		{
-			return {};
-		}
+		ProcessWakeup.notify_all();
 	}
-	
+	inline TResult GetResult(TQuery Query)
+	{
+		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
+
+		StartQueries<1>({ Query });
+
+		return GetResult_DoNotStartQuery(Query);
+	}
+	// Needed to make all threads work before waiting
+	template<uint32 Count>
+	inline TStaticArray<TResult, Count> GetResults(TStaticArray<TQuery, Count> Queries)
+	{
+		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
+
+		StartQueries(Queries);
+
+		TStaticArray<TResult, Count> Results;
+		for(uint32 Index = 0; Index < Count; Index++)
+		{
+			Results[Index] = GetResult_DoNotStartQuery(Queries[Index]);
+		}
+		return Results;
+	}
+
+	inline void Stop()
+	{
+		check(!StopAtomic);
+		StopAtomic = true;
+	}
 	inline void Join()
 	{
 		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
 
 		check(!Joined);
+		check(StopAtomic);
 		for (auto& Thread : Threads)
 		{
 			Thread.join();
@@ -134,79 +156,81 @@ public:
 	}
 
 private:
-	void RunThread()
+	void RunThread(int32 ThreadIndex)
 	{
-		NAME_THREAD(Name);
+		char Buffer[1024];
+		sprintf(Buffer, "%s #%d", Name, ThreadIndex);
+		NAME_THREAD(Buffer);
+
+		InitThread();
 		
 		while (!StopAtomic)
 		{
-			bool Wait = true;
+			TOptional<TQuery> OptionalQuery;
 			{
-				std::lock_guard<std::mutex> Guard(ResultsMutex);
-				if (Results.size() + ResultsBeingProcessed < ResultsToCache)
+				FScopeLock Lock(QueriesToProcessMutex);
+				if (!QueriesToProcess.empty())
 				{
-					ResultsBeingProcessed++;
-					Wait = false;
+					OptionalQuery = QueriesToProcess.front();
+					QueriesToProcess.pop();
 				}
 			}
 
-			if (Wait)
+			if (OptionalQuery.IsValid())
+			{
+				TQuery Query = OptionalQuery.GetValue();
+				TInput NewInput;
+				TResult NewResult;
+
+				{
+					PROFILE_SCOPE("Get Input %u", Query);
+					NewInput = GetInputFunction(Query);
+				}
+				{
+					PROFILE_SCOPE("Process %u", Query);
+					NewResult = ProcessFunction(Query, NewInput);
+				}
+
+				FScopeLock Lock(ProcessedQueriesMutex);
+				check(ProcessedQueries.find(Query) == ProcessedQueries.end());
+				ProcessedQueries[Query] = NewResult;
+				ProcessFinished.notify_one();
+			}
+			else
 			{
 				const auto ShouldWakeup = [this]()
 				{
 					if (StopAtomic) return true;
-					std::lock_guard<std::mutex> Guard(ResultsMutex);
-					return Results.size() + ResultsBeingProcessed < ResultsToCache;
+					FScopeLock Lock(QueriesToProcessMutex);
+					return !QueriesToProcess.empty();
 				};
 				PROFILE_SCOPE_COLOR(COLOR_YELLOW, "Wait");
-				std::unique_lock<std::mutex> Lock(ProcessWakeupMutex);
-				while (!ShouldWakeup()) ProcessWakeup.wait_for(Lock, std::chrono::milliseconds(1));
-			}
-			else
-			{
-				TOptional<TInput> NewInput;
-				TResult NewResult;
-
-				{
-					PROFILE_SCOPE("Get Input");
-					NewInput = GetInputFunction();
-				}
-
-				if (!NewInput.IsValid())
-				{
-					StopAtomic = true;
-					ProcessWakeup.notify_all();
-					ProcessFinished.notify_all();
-					break;
-				}
-
-				{
-					PROFILE_SCOPE("Process");
-					NewResult = ProcessFunction(NewInput.GetValue());
-				}
-
-				std::lock_guard<std::mutex> Guard(ResultsMutex);
-				checkAlways(ResultsBeingProcessed-- >= 0);
-				Results.push(NewResult);
-				ProcessFinished.notify_one();
+				FUniqueLock Lock(ProcessWakeupMutex);
+				while (!ShouldWakeup()) ProcessWakeup.wait_for(Lock, std::chrono::milliseconds(10));
 			}
 		}
+
+		DestroyThread();
 	}
 
 	const char* const Name;
-	const std::function<TOptional<TInput>()> GetInputFunction;
-	const std::function<TResult(TInput)> ProcessFunction;
-	const uint32 ResultsToCache;
+	const std::function<TInput(TQuery)> GetInputFunction;
+	const std::function<TResult(TQuery, TInput)> ProcessFunction;
+	const std::function<void()> InitThread;
+	const std::function<void()> DestroyThread;
 
-	std::mutex ResultsMutex;
-	int32 ResultsBeingProcessed = 0;
-	std::queue<TResult> Results;
+	TracyLockable(std::mutex, QueriesToProcessMutex);
+	std::queue<TQuery> QueriesToProcess;
+	std::unordered_set<TQuery> AlreadyQueuedQueries;
 
-	std::mutex ProcessWakeupMutex;
-	std::condition_variable ProcessWakeup;
+	TracyLockable(std::mutex, ProcessedQueriesMutex);
+	std::unordered_map<TQuery, TResult> ProcessedQueries;
+	
+	TracyLockable(std::mutex, ProcessWakeupMutex);
+	std::condition_variable_any ProcessWakeup;
 
-	std::mutex ProcessFinishedMutex;
-	std::condition_variable ProcessFinished;
+	TracyLockable(std::mutex, ProcessFinishedMutex);
+	std::condition_variable_any ProcessFinished;
 	
 	std::vector<std::thread> Threads;
 	std::atomic<bool> StopAtomic{ false };
@@ -214,33 +238,11 @@ private:
 	bool Joined = false;
 };
 
-template<typename T>
-struct TIndexedData
-{
-	uint32 Index = 0xFFFFFFFF;
-	T Data;
-};
-
 template<typename TInput, typename TResult>
-class TIndexedThread : public TThread<TIndexedData<TInput>, TIndexedData<TResult>>
-{
-public:
-	TIndexedThread(
-		const char* Name,
-		std::function<TOptional<TIndexedData<TInput>>()> GetInputFunction,
-		std::function<TResult(uint32, TInput)> ProcessFunction,
-		uint32 ResultsToCache)
-		: TThread<TIndexedData<TInput>, TIndexedData<TResult>>(
-			Name,
-			GetInputFunction,
-			[ProcessFunction](TIndexedData<TInput> Input) { return TIndexedData<TResult>{ Input.Index, ProcessFunction(Input.Index, Input.Data) }; },
-			ResultsToCache)
-	{
-	}
-};
+using TIndexedThread = TThread<TInput, TResult, uint32>;
 
 template<typename T>
 inline auto GetResultLambda(T& Thread)
 {
-	return [&]() { return Thread.GetSingleResult(); };
+	return [&](auto Query) { return Thread.GetResult(Query); };
 }

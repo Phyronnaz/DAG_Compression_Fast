@@ -2,15 +2,15 @@
 
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
-#define ENABLE_CHECKS 1
+#define ENABLE_CHECKS 0
 #define DEBUG_GPU_ARRAYS 0
 
 #define ENABLE_COLORS 0
 
-#define LEVELS 14
+#define LEVELS 15
 #define TOP_LEVEL MAX(LEVELS - 8, 0)
-#define SUBDAG_LEVELS 10
-#define VOXELIZER_MAX_NUM_FRAGMENTS 50 * 1024 * 1024
+#define SUBDAG_LEVELS 11
+#define VOXELIZER_MAX_NUM_FRAGMENTS 100 * 1024 * 1024
 #define GPU_MEMORY_ALLOCATED_IN_GB 3.0
 
 #define NUM_MERGE_COLORS_THREADS 4
@@ -224,16 +224,6 @@ namespace detail
 	};
 }
 
-#define DEFAULT_STREAM cudaStream_t(0)
-
-#define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
-#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL cudaStreamSynchronize(0)
-#define CUDA_CHECK_ERROR() \
-	{ \
-		CUDA_CHECKED_CALL cudaStreamSynchronize(0); \
-		CUDA_CHECKED_CALL cudaGetLastError(); \
-	}
-
 #include <limits>
 
 template<typename T, typename U>
@@ -266,10 +256,19 @@ HOST_DEVICE T Cast(U Value)
 		ZoneName(__String, __Size); \
 	}
 
+#define ZONE_METADATA_TRACY(Format, ...) \
+	{ \
+		char __String[1024]; \
+		const int32 __Size = sprintf(__String, Format, ##__VA_ARGS__); \
+		checkInfEqual(__Size, 1024); \
+		ZoneText(__String, __Size); \
+	}
+
 #define MARK_TRACY(Name) FrameMarkNamed(Name)
 #define NAME_THREAD_TRACY(Name) tracy::SetThreadName(Name);
 #else
 #define PROFILE_SCOPE_COLOR_TRACY(Color, Format, ...)
+#define ZONE_METADATA_TRACY(Format, ...)
 #define MARK_TRACY(Name)
 #define NAME_THREAD_TRACY(Name)
 #endif
@@ -321,3 +320,31 @@ struct FNVExtScope
 
 #define MARK(Name) MARK_NV(Name); MARK_TRACY(Name);
 #define NAME_THREAD(Name) NAME_THREAD_NV(Name); NAME_THREAD_TRACY(Name);
+
+#define ZONE_METADATA(Format, ...) ZONE_METADATA_TRACY(Format, ##__VA_ARGS__)
+
+#include <mutex>
+
+using FScopeLock = std::lock_guard<LockableBase(std::mutex)>;
+using FUniqueLock = std::unique_lock<LockableBase(std::mutex)>;
+
+#define DEFAULT_STREAM cudaStream_t(0)
+
+inline auto StreamSynchronize()
+{
+	PROFILE_FUNCTION();
+	return cudaStreamSynchronize(DEFAULT_STREAM);
+}
+
+#define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
+#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize()
+#define CUDA_CHECK_ERROR_ALWAYS() \
+	{ \
+		CUDA_SYNCHRONIZE_STREAM(); \
+		CUDA_CHECKED_CALL cudaGetLastError(); \
+	}
+#if ENABLE_CHECKS
+#define CUDA_CHECK_ERROR() CUDA_CHECK_ERROR_ALWAYS()
+#else
+#define CUDA_CHECK_ERROR()
+#endif

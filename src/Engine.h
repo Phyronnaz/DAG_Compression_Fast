@@ -101,12 +101,12 @@ struct FAppState
 		
 
 		glfwGetCursorPos(MainWindow, &NewMouse.x, &NewMouse.y);
-		const bool LeftDown   = IsPressed(GLFW_MOUSE_BUTTON_LEFT);
-		const bool MiddleDown = IsPressed(GLFW_MOUSE_BUTTON_RIGHT);
-		const bool RightDown  = IsPressed(GLFW_MOUSE_BUTTON_MIDDLE);
+		const bool LeftDown = glfwGetMouseButton(MainWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+		const bool MiddleDown = glfwGetMouseButton(MainWindow, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+		const bool RightDown = glfwGetMouseButton(MainWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
 
 		const glm::vec2 DeltaMouse = NewMouse - OldMouse;
-
+		
 		const float MouseScaleFactor{ 0.25f * DeltaTime };
 		if (LeftDown && RightDown) 
 		{

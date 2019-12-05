@@ -39,18 +39,104 @@ FMemory::~FMemory()
 	}
 }
 
+void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemcpyKind MemcpyKind)
+{
+	const auto BlockCopy = [&]()
+	{
+		const double Start = Utils::Seconds();
+
+		const uint64 BlockSize = 1 << 16;
+		const uint64 NumBlocks = Size / BlockSize;
+		for (uint64 BlockIndex = 0; BlockIndex < NumBlocks; BlockIndex++)
+		{
+			const uint64 Offset = BlockIndex * BlockSize;
+			checkInfEqual(Offset + BlockSize, Size);
+			CUDA_CHECKED_CALL cudaMemcpyAsync(Dst + Offset, Src + Offset, BlockSize, MemcpyKind, DEFAULT_STREAM);
+			CUDA_SYNCHRONIZE_STREAM();
+		}
+		const uint64 DataLeft = Size - NumBlocks * BlockSize;
+		if (DataLeft > 0)
+		{
+			const uint64 Offset = NumBlocks * BlockSize;
+			checkEqual(Offset + DataLeft, Size);
+			CUDA_CHECKED_CALL cudaMemcpyAsync(Dst + Offset, Src + Offset, DataLeft, MemcpyKind, DEFAULT_STREAM);
+			CUDA_SYNCHRONIZE_STREAM();
+		}
+
+		const double End = Utils::Seconds();
+
+		return End - Start;
+	};
+
+	if (MemcpyKind == cudaMemcpyDeviceToDevice)
+	{
+		PROFILE_SCOPE("Memcpy DtD %fMB", Size / double(1u << 20));
+
+		const double Start = Utils::Seconds();
+		CUDA_CHECKED_CALL cudaMemcpyAsync(Dst, Src, Size, MemcpyKind, DEFAULT_STREAM);
+		CUDA_SYNCHRONIZE_STREAM();
+		const double End = Utils::Seconds();
+
+		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / (End - Start));
+	}
+	else if (MemcpyKind == cudaMemcpyDeviceToHost)
+	{
+		PROFILE_SCOPE("Memcpy DtH %fMB", Size / double(1u << 20));
+		const double Time = BlockCopy();
+		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / Time);
+	}
+	else if (MemcpyKind == cudaMemcpyHostToDevice)
+	{
+		PROFILE_SCOPE("Memcpy HtD %fMB", Size / double(1u << 20));
+		const double Time = BlockCopy();
+		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / Time);
+	}
+}
+
+inline auto AllocGPU(void*& Ptr, uint64 Size)
+{
+	PROFILE_FUNCTION();
+	cnmemStatus_t Result = cnmemStatus_t(255);
+	while (Result != CNMEM_STATUS_SUCCESS)
+	{
+		if (Result != cnmemStatus_t(255))
+		{
+			PROFILE_SCOPE_COLOR(COLOR_RED, "Waiting for memory");
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		Result = cnmemMalloc(&Ptr, Size, DEFAULT_STREAM);
+	}
+	TracyAlloc(Ptr, Size);
+	return Result;
+}
+inline auto AllocCPU(void*& Ptr, uint64 Size)
+{
+	PROFILE_FUNCTION();
+	return cudaMallocHost(&Ptr, Size);
+}
+inline void FreeGPU(void* Ptr)
+{
+	PROFILE_FUNCTION();
+	TracyFree(Ptr);
+	CUDA_CHECKED_CALL cnmemFree(Ptr, DEFAULT_STREAM);
+}
+inline void FreeCPU(void* Ptr)
+{
+	PROFILE_FUNCTION();
+	CUDA_CHECKED_CALL cudaFreeHost(Ptr);
+}
+
 void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 {
 	PROFILE_FUNCTION();
-	CUDA_CHECK_ERROR();
 	
 	checkAlways(Size != 0);
 	void* Ptr = nullptr;
 	{
-		PROFILE_SCOPE("Alloc %" PRIu64 "B on %s", Size, MemoryTypeToString(Type));
+		ZONE_METADATA("Size: %" PRIu64 "B", Size);
 		if (Type == EMemoryType::GPU)
 		{
-			const auto Error = cnmemMalloc(&Ptr, Size, DEFAULT_STREAM);
+			const auto Error = AllocGPU(Ptr, Size);
 			if (Error != CNMEM_STATUS_SUCCESS)
 			{
 				LOG("\n\n\n");
@@ -64,7 +150,7 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 		else
 		{
 			check(Type == EMemoryType::CPU);
-			const auto Error = cudaMallocHost(&Ptr, Size);
+			const auto Error = AllocCPU(Ptr, Size);
 			if (Error != cudaSuccess)
 			{
 				LOG("\n\n\n");
@@ -76,7 +162,7 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 	}
 
 	{
-		std::lock_guard<std::mutex> Guard(Mutex);
+		FScopeLock Lock(MemoryMutex);
 		if (Type == EMemoryType::GPU)
 		{
 			TotalAllocatedGpuMemory += Size;
@@ -97,34 +183,32 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 void FMemory::FreeImpl(void* Ptr)
 {
 	PROFILE_FUNCTION();
-	CUDA_CHECK_ERROR();
 	
 	if (!Ptr) return;
 
 	FAlloc Alloc;
 	{
-		std::lock_guard<std::mutex> Guard(Mutex);
+		FScopeLock Lock(MemoryMutex);
 		checkAlways(Allocations.find(Ptr) != Allocations.end());
 		Alloc = Allocations[Ptr];
 		Allocations.erase(Ptr);
 	}
 
 	{
-		PROFILE_SCOPE("Free %" PRIu64 "B on %s", Alloc.Size, MemoryTypeToString(Alloc.Type));
+		ZONE_METADATA("Size: %" PRIu64 "B", Alloc.Size);
 		if (Alloc.Type == EMemoryType::GPU)
 		{
-			CUDA_CHECK_ERROR();
-			CUDA_CHECKED_CALL cnmemFree(Ptr, DEFAULT_STREAM);
+			FreeGPU(Ptr);
 		}
 		else
 		{
 			check(Alloc.Type == EMemoryType::CPU);
-			CUDA_CHECKED_CALL cudaFreeHost(Ptr);
+			FreeCPU(Ptr);
 		}
 	}
 
 	{
-		std::lock_guard<std::mutex> Guard(Mutex);
+		FScopeLock Lock(MemoryMutex);
 		if (Alloc.Type == EMemoryType::GPU)
 		{
 			TotalAllocatedGpuMemory -= Alloc.Size;
@@ -141,12 +225,11 @@ void FMemory::FreeImpl(void* Ptr)
 void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 {
 	PROFILE_FUNCTION();
-	CUDA_CHECK_ERROR();
 
 	const auto OldPtr = Ptr;
 	FAlloc OldAlloc;
 	{
-		std::lock_guard<std::mutex> Guard(Mutex);
+		FScopeLock Lock(MemoryMutex);
 		checkAlways(Ptr);
 		checkAlways(Allocations.find(Ptr) != Allocations.end());
 		OldAlloc = Allocations[Ptr];
@@ -187,12 +270,13 @@ void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, 
 {
 	PROFILE_FUNCTION();
 
-	std::lock_guard<std::mutex> Guard(Mutex);
+	FScopeLock Lock(MemoryMutex);
 	checkAlways(Ptr);
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	checkAlways(Size != 0);
 	if (Type == EMemoryType::GPU)
 	{
+		TracyAlloc(Ptr, Size);
 		TotalAllocatedGpuMemory += Size;
 		MaxTotalAllocatedGpuMemory = std::max(MaxTotalAllocatedGpuMemory, TotalAllocatedGpuMemory);
 	}
@@ -210,12 +294,12 @@ void FMemory::UnregisterCustomAllocImpl(void* Ptr)
 {
 	PROFILE_FUNCTION();
 
-	std::lock_guard<std::mutex> Guard(Mutex);
+	FScopeLock Lock(MemoryMutex);
 	checkAlways(Allocations.find(Ptr) != Allocations.end());
 	auto& Alloc = Allocations[Ptr];
 	if (Alloc.Type == EMemoryType::GPU)
 	{
-		CUDA_CHECK_ERROR();
+		TracyFree(Ptr);
 		TotalAllocatedGpuMemory -= Alloc.Size;
 	}
 	else
@@ -228,7 +312,7 @@ void FMemory::UnregisterCustomAllocImpl(void* Ptr)
 
 FMemory::FAlloc FMemory::GetAllocInfoImpl(void* Ptr) const
 {
-	std::lock_guard<std::mutex> Guard(Mutex);
+	FScopeLock Lock(MemoryMutex);
 	checkAlways(Ptr);
 	checkAlways(Allocations.find(Ptr) != Allocations.end());
 	return Allocations.at(Ptr);
@@ -236,7 +320,7 @@ FMemory::FAlloc FMemory::GetAllocInfoImpl(void* Ptr) const
 
 std::string FMemory::GetStatsStringImpl() const
 {
-	std::lock_guard<std::mutex> Guard(Mutex);
+	FScopeLock Lock(MemoryMutex);
 
 	struct AllocCount
 	{

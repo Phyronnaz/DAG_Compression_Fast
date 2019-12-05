@@ -109,283 +109,306 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	return FinalDag;
 }
 
-FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAABB& AABB)
+template<uint32 Prefetch, typename T1, typename T2>
+inline auto GetResultLambda_Prefetch(T1& Thread, T2 MaxSize)
 {
-	FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
-	auto* const MainWindow = glfwGetCurrentContext();
-	glfwMakeContextCurrent(nullptr);
-
-	const auto AABBs = GetAABBs(AABB);
-
-	std::atomic<uint32> SubDagIndex = 0;
-
-#if ENABLE_COLORS
-	std::vector<TCpuArray<uint32>> SubDagColors(AABBs.size());
-	std::condition_variable SubDagColorsFence;
-	std::atomic<bool> SubDagColorsFinished{ false };
-#endif
-	
-	using FFragments = TGpuArray<uint64>;
-	
-	const auto VoxelizerThreadInput = [&]() -> TOptional<TIndexedData<FEmpty>>
+	return [&Thread, MaxSize](uint32 Query)
 	{
-		const uint32 Index = SubDagIndex.fetch_add(1);
-		if (Index < AABBs.size())
+		TStaticArray<uint32, Prefetch + 1> Queries;
+		for (uint32 Index = 0; Index < Prefetch + 1; Index++)
 		{
-			return TIndexedData<FEmpty>{ Index, {} };
-		}
-		else
-		{
-			return {};
-		}
-	};
-	const auto VoxelizerThreadOutput = [&](uint32 Index, FEmpty)
-	{
-		glfwMakeContextCurrent(MainWindow);
-		const auto GlFragments = Voxelizer.GenerateFragments(AABBs[Index]);
-		if (GlFragments.Num() == 0) return FFragments();
-		
-		auto CudaFragments = TGpuArray<uint64>("Fragments", GlFragments.Num());
-		CUDA_CHECKED_CALL cudaMemcpyAsync(CudaFragments.GetData(), GlFragments.GetData(), GlFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
-		CUDA_SYNCHRONIZE_STREAM();
-		return CudaFragments;
-	};
-	TIndexedThread<FEmpty, FFragments> VoxelizerThread(
-		"0 - VoxelizerThread",
-		VoxelizerThreadInput, 
-		VoxelizerThreadOutput, 
-		1); // Must be 1
-
-	const auto SortFragmentsThreadOutput = [](uint32 Index, FFragments Fragments)
-	{
-		if (Fragments.Num() == 0) return Fragments;
-		return SortFragmentsAndRemoveDuplicates(std::move(Fragments));
-	};
-	TIndexedThread<FFragments, FFragments> SortFragmentsThread(
-		"1 - SortFragmentsThread",
-		GetResultLambda(VoxelizerThread),
-		SortFragmentsThreadOutput,
-		1);
-
-	const auto ExtractColorsThreadOutput = [&](uint32 Index, FFragments Fragments)
-	{
-#if ENABLE_COLORS
-		if (Fragments.Num() > 0)
-		{
-			auto Colors = ExtractColorsAndFixFragments(Fragments);
-			SubDagColors[Index] = Colors.CreateCPU(); // TODO async copy
-			Colors.Free();
-		}
-		
-		if (Index == AABBs.size() - 1)
-		{
-			SubDagColorsFinished = true;
-			SubDagColorsFence.notify_all();
-		}
-#endif
-		return Fragments;
-	};
-	TIndexedThread<FFragments, FFragments> ExtractColorsThread(
-		"2 - ExtractColorsThread",
-		GetResultLambda(SortFragmentsThread),
-		ExtractColorsThreadOutput,
-		1);
-
-	struct FLeavesFragments
-	{
-		TGpuArray<uint64> Leaves;
-		FFragments Fragments;
-		TGpuArray<uint32> FragmentIndicesToChildrenIndices;
-	};
-	const auto ExtractAndSortLeavesThreadOutput = [](uint32 Index, FFragments Fragments)
-	{
-		if (Fragments.Num() == 0) return FLeavesFragments();
-
-		auto Leaves = ExtractLeavesAndShiftReduceFragments(Fragments);
-		
-		TGpuArray<uint32> FragmentIndicesToChildrenIndices;
-		SortLeaves(Leaves, FragmentIndicesToChildrenIndices);
-		return FLeavesFragments{ Leaves, Fragments, FragmentIndicesToChildrenIndices };
-	};
-	TIndexedThread<FFragments, FLeavesFragments> ExtractAndSortLeavesThread(
-		"3 - ExtractAndSortLeavesThread",
-		GetResultLambda(ExtractColorsThread),
-		ExtractAndSortLeavesThreadOutput,
-		1);
-	
-	const auto ExtractSubDagThreadOutput = [&AABBs](uint32 Index, FLeavesFragments LeavesFragments)
-	{
-		auto& Fragments = LeavesFragments.Fragments;
-		const auto& Leaves = LeavesFragments.Leaves;
-		auto& FragmentIndicesToChildrenIndices = LeavesFragments.FragmentIndicesToChildrenIndices;
-
-		FCpuDag CpuDag;
-		CpuDag.Levels.resize(SUBDAG_LEVELS - 2);
-		if (Fragments.Num() == 0) return CpuDag;
-		
-		CpuDag.Leaves = Leaves.CreateCPU();
-		
-		auto PreviousLevelHashes = Leaves;
-		for (int32 LevelDepth = SUBDAG_LEVELS - 3; LevelDepth >= 0; LevelDepth--)
-		{
-			PROFILE_SCOPE("Level %d", LevelDepth);
-
-			FGpuLevel Level = ExtractLevelAndShiftReduceFragments(Fragments, FragmentIndicesToChildrenIndices);
-			FragmentIndicesToChildrenIndices.Free();
-
-			ComputeHashes(Level, PreviousLevelHashes);
-			PreviousLevelHashes.Free();
-
-			SortLevel(Level, FragmentIndicesToChildrenIndices);
-
-			CpuDag.Levels[LevelDepth] = Level.ToCPU();
-			Level.Free(false);
-			PreviousLevelHashes = Level.Hashes;
-		}
-		check(PreviousLevelHashes.Num() == 1);
-		PreviousLevelHashes.Free();
-
-		FragmentIndicesToChildrenIndices.Free();
-		Fragments.Free();
-
-		LOG("Subdag %u/%u done", Index + 1, uint32(AABBs.size()));
-		
-		return CpuDag;
-	};
-	TIndexedThread<FLeavesFragments, FCpuDag> ExtractSubDagThread(
-		"4 - ExtractSubDagThread",
-		GetResultLambda(ExtractAndSortLeavesThread),
-		ExtractSubDagThreadOutput,
-		8);
-
-	using FDagChildren = TStaticArray<TIndexedData<FCpuDag>, 8>;
-	std::vector<std::unique_ptr<TThread<FDagChildren, TIndexedData<FCpuDag>>>> MergeThreads(LEVELS - SUBDAG_LEVELS);
-
-	for (int32 MergePassIndex = 0; MergePassIndex < LEVELS - SUBDAG_LEVELS; MergePassIndex++)
-	{
-		const auto MergeDagsThreadOutput = [](FDagChildren Dags)
-		{
-			check(Dags[0].Index == Dags[1].Index - 1);
-			check(Dags[1].Index == Dags[2].Index - 1);
-			check(Dags[2].Index == Dags[3].Index - 1);
-			check(Dags[3].Index == Dags[4].Index - 1);
-			check(Dags[4].Index == Dags[5].Index - 1);
-			check(Dags[5].Index == Dags[6].Index - 1);
-			check(Dags[6].Index == Dags[7].Index - 1);
-			check(Dags[0].Index % 8 == 0);
-			const uint32 SubDagIndex = Dags[0].Index / 8;
-
-			uint64 Hashes[8];
-			const auto CopyHash = [&](int32 Index)
+			if (Query + Index < MaxSize)
 			{
-				auto& TopLevelHashes = Dags[Index].Data.Levels[0].Hashes;
-				checkInfEqual(TopLevelHashes.Num(), 1);
-				if (TopLevelHashes.Num() > 0)
-				{
-					check(TopLevelHashes[0] != 0);
-					Hashes[Index] = TopLevelHashes[0];
-				}
-				else
-				{
-					Hashes[Index] = 0;
-				}
-			};
-
-			CopyHash(0);
-			FCpuDag MergedDag = Dags[0].Data;
-			for (int32 Index = 1; Index < 8; Index++)
-			{
-				CopyHash(Index);
-				MergedDag = MergeDAGs(std::move(MergedDag), std::move(Dags[Index].Data));
-			}
-
-			// MergedHashes contains all the root subdags hashes
-			// Use the stored hashes to find back the roots indices
-			// The new children will be in the correct order as dags are in morton order (see AABB split)
-
-			uint8 ChildMask = 0;
-			FChildrenIndices ChildrenIndices{};
-			const auto& MergedHashes = MergedDag.Levels[0].Hashes;
-			for (int32 Index = 0; Index < 8; Index++)
-			{
-				const uint64 Hash = Hashes[Index];
-				if (Hash == 0)
-				{
-					ChildrenIndices.Indices[Index] = 0xFFFFFFFF;
-				}
-				else
-				{
-					ChildMask |= 1 << Index;
-					ChildrenIndices.Indices[Index] = uint32(MergedHashes.FindChecked(Hash));
-				}
-			}
-			const uint64 Hash = HashChildrenHashes(Hashes);
-
-			FCpuLevel TopLevel;
-			if (ChildMask != 0)
-			{
-				TopLevel.ChildMasks = TCpuArray<uint8>("ChildMasks", { ChildMask });
-				TopLevel.ChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", { ChildrenIndices });
-				TopLevel.Hashes = TCpuArray<uint64>("Hashes", { Hash });
-			}
-			CheckLevelIndices(TopLevel);
-
-			MergedDag.Levels.insert(MergedDag.Levels.begin(), TopLevel);
-
-			return TIndexedData<FCpuDag>{ SubDagIndex, MergedDag };
-		};
-		const auto MergeThreadInput = [MergePassIndex, &ExtractSubDagThread, &MergeThreads]()
-		{
-			if (MergePassIndex == 0)
-			{
-				return ExtractSubDagThread.GetResult<8>();
+				Queries[Index] = Query + Index;
 			}
 			else
 			{
-				return MergeThreads[MergePassIndex - 1]->GetResult<8>();
+				Queries[Index] = Query;
 			}
+		}
+		Thread.StartQueries(Queries);
+		return Thread.GetResult_DoNotStartQuery(Query);
+	};
+}
+
+inline void MakeContextCurrent(GLFWwindow* Window)
+{
+	PROFILE_FUNCTION();
+	glfwMakeContextCurrent(Window);
+}
+
+FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAABB& AABB)
+{
+	cudaProfilerStart();
+	MARK("Start");
+	const double GlobalStartTime = Utils::Seconds();
+	std::atomic<uint64> TotalFragments{ 0 };
+	
+	FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
+	auto* const MainWindow = glfwGetCurrentContext();
+	MakeContextCurrent(nullptr);
+
+	FFinalDag FinalDag;
+	// Scope so that the threads are destroyed before reaching the next glfwMakeContextCurrent
+	{
+		const auto AABBs = GetAABBs(AABB);
+#if ENABLE_COLORS
+		std::vector<TCpuArray<uint32>> SubDagColors(AABBs.size());
+		std::atomic<uint32> NumSubDagColorsFinished{ 0 };
+
+		TCpuArray<uint32> MergedColors;
+		std::thread MergeColorThread;
+#endif
+
+		using FFragments = TGpuArray<uint64>;
+
+		const auto VoxelizerThreadInput = [&](uint32) { return FEmpty(); };
+		const auto VoxelizerThreadOutput = [&](uint32 Index, FEmpty)
+		{
+			const auto GlFragments = Voxelizer.GenerateFragments(AABBs[Index]);
+			TotalFragments.fetch_add(GlFragments.Num());
+			if (GlFragments.Num() == 0) return FFragments();
+
+			auto CudaFragments = TGpuArray<uint64>("Fragments", GlFragments.Num());
+			FMemory::CudaMemcpy(CudaFragments.GetData(), GlFragments.GetData(), GlFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
+			return CudaFragments;
 		};
-		char* Buffer = new char[1024];
-		sprintf(Buffer, "%d - MergeThread Pass %d", 5 + MergePassIndex, MergePassIndex);
-		MergeThreads[MergePassIndex] = std::make_unique<TThread<FDagChildren, TIndexedData<FCpuDag>>>(
-			Buffer,
-			MergeThreadInput,
-			MergeDagsThreadOutput,
-			8);
-	}
+		TIndexedThread<FEmpty, FFragments> VoxelizerThread(
+			"0 - VoxelizerThread",
+			VoxelizerThreadInput,
+			VoxelizerThreadOutput,
+			1, // Must be 1
+			[=]() { MakeContextCurrent(MainWindow); },
+			[=]() { MakeContextCurrent(nullptr); });
 
-	MARK("Threads started");
-	
+		const auto SortFragmentsThreadOutput = [](uint32 Index, FFragments Fragments)
+		{
+			if (Fragments.Num() == 0) return Fragments;
+			return SortFragmentsAndRemoveDuplicates(std::move(Fragments));
+		};
+		TIndexedThread<FFragments, FFragments> SortFragmentsThread(
+			"1 - SortFragmentsThread",
+			GetResultLambda_Prefetch<4>(VoxelizerThread, AABBs.size()),
+			SortFragmentsThreadOutput,
+			1);
+
+		const auto ExtractColorsThreadOutput = [&](uint32 Index, FFragments Fragments)
+		{
 #if ENABLE_COLORS
-	{
-		PROFILE_SCOPE_COLOR(COLOR_YELLOW, "Wait for sub dag colors");
-		std::mutex SubDagColorsFenceMutex;
-		std::unique_lock<std::mutex> Lock(SubDagColorsFenceMutex);
-		SubDagColorsFence.wait(Lock, [&]() { return SubDagColorsFinished.load(); });
-	}
-	TCpuArray<uint32> MergedColors;
-	std::thread MergeColorThread = MergeColors(std::move(SubDagColors), MergedColors);
-#endif
-	
-	auto& MainThread = *MergeThreads.back();
-	MainThread.Join();
-	const auto IndexedFinalDag = MainThread.GetSingleResult().GetValue();
-	check(IndexedFinalDag.Index == 0);
-	FCpuDag FinalDagData = IndexedFinalDag.Data;
+			if (Fragments.Num() > 0)
+			{
+				auto Colors = ExtractColorsAndFixFragments(Fragments);
+				SubDagColors[Index] = Colors.CreateCPU(); // TODO async copy
+				Colors.Free();
+			}
 
-	MARK("Threads done");
-	
+			if (NumSubDagColorsFinished.fetch_add(1) + 1 == AABBs.size())
+			{
+				MergeColorThread = MergeColors(std::move(SubDagColors), MergedColors);
+			}
+#endif
+			return Fragments;
+		};
+		TIndexedThread<FFragments, FFragments> ExtractColorsThread(
+			"2 - ExtractColorsThread",
+			GetResultLambda_Prefetch<4>(SortFragmentsThread, AABBs.size()),
+			ExtractColorsThreadOutput,
+			1);
+
+		struct FLeavesFragments
+		{
+			TGpuArray<uint64> Leaves;
+			FFragments Fragments;
+			TGpuArray<uint32> FragmentIndicesToChildrenIndices;
+		};
+		const auto ExtractAndSortLeavesThreadOutput = [](uint32 Index, FFragments Fragments)
+		{
+			if (Fragments.Num() == 0) return FLeavesFragments();
+
+			auto Leaves = ExtractLeavesAndShiftReduceFragments(Fragments);
+
+			TGpuArray<uint32> FragmentIndicesToChildrenIndices;
+			SortLeaves(Leaves, FragmentIndicesToChildrenIndices);
+			return FLeavesFragments{ Leaves, Fragments, FragmentIndicesToChildrenIndices };
+		};
+		TIndexedThread<FFragments, FLeavesFragments> ExtractAndSortLeavesThread(
+			"3 - ExtractAndSortLeavesThread",
+			GetResultLambda_Prefetch<4>(ExtractColorsThread, AABBs.size()),
+			ExtractAndSortLeavesThreadOutput,
+			1);
+
+		const auto ExtractSubDagThreadOutput = [](uint32 Index, FLeavesFragments LeavesFragments)
+		{
+			auto& Fragments = LeavesFragments.Fragments;
+			const auto& Leaves = LeavesFragments.Leaves;
+			auto& FragmentIndicesToChildrenIndices = LeavesFragments.FragmentIndicesToChildrenIndices;
+
+			FCpuDag CpuDag;
+			CpuDag.Levels.resize(SUBDAG_LEVELS - 2);
+			if (Fragments.Num() == 0) return CpuDag;
+
+			CpuDag.Leaves = Leaves.CreateCPU();
+
+			auto PreviousLevelHashes = Leaves;
+			for (int32 LevelDepth = SUBDAG_LEVELS - 3; LevelDepth >= 0; LevelDepth--)
+			{
+				PROFILE_SCOPE("Level %d", LevelDepth);
+
+				FGpuLevel Level = ExtractLevelAndShiftReduceFragments(Fragments, FragmentIndicesToChildrenIndices);
+				FragmentIndicesToChildrenIndices.Free();
+
+				ComputeHashes(Level, PreviousLevelHashes);
+				PreviousLevelHashes.Free();
+
+				SortLevel(Level, FragmentIndicesToChildrenIndices);
+
+				CpuDag.Levels[LevelDepth] = Level.ToCPU();
+				Level.Free(false);
+				PreviousLevelHashes = Level.Hashes;
+			}
+			check(PreviousLevelHashes.Num() == 1);
+			PreviousLevelHashes.Free();
+
+			FragmentIndicesToChildrenIndices.Free();
+			Fragments.Free();
+
+			return CpuDag;
+		};
+		TIndexedThread<FLeavesFragments, FCpuDag> ExtractSubDagThread(
+			"4 - ExtractSubDagThread",
+			GetResultLambda_Prefetch<4>(ExtractAndSortLeavesThread, AABBs.size()),
+			ExtractSubDagThreadOutput,
+			2);
+
+		using FDagChildren = TStaticArray<FCpuDag, 8>;
+		std::vector<std::unique_ptr<TIndexedThread<FDagChildren, FCpuDag>>> MergeThreads(LEVELS - SUBDAG_LEVELS);
+
+		for (int32 MergePassIndex = 0; MergePassIndex < LEVELS - SUBDAG_LEVELS; MergePassIndex++)
+		{
+			const auto MergeDagsThreadOutput = [](uint32 DagIndex, FDagChildren Dags)
+			{
+				uint64 Hashes[8];
+				const auto CopyHash = [&](int32 Index)
+				{
+					auto& TopLevelHashes = Dags[Index].Levels[0].Hashes;
+					checkInfEqual(TopLevelHashes.Num(), 1);
+					if (TopLevelHashes.Num() > 0)
+					{
+						check(TopLevelHashes[0] != 0);
+						Hashes[Index] = TopLevelHashes[0];
+					}
+					else
+					{
+						Hashes[Index] = 0;
+					}
+				};
+
+				CopyHash(0);
+				FCpuDag MergedDag = Dags[0];
+				for (int32 Index = 1; Index < 8; Index++)
+				{
+					CopyHash(Index);
+					MergedDag = MergeDAGs(std::move(MergedDag), std::move(Dags[Index]));
+				}
+
+				// MergedHashes contains all the root subdags hashes
+				// Use the stored hashes to find back the roots indices
+				// The new children will be in the correct order as dags are in morton order (see AABB split)
+
+				uint8 ChildMask = 0;
+				FChildrenIndices ChildrenIndices{};
+				const auto& MergedHashes = MergedDag.Levels[0].Hashes;
+				for (int32 Index = 0; Index < 8; Index++)
+				{
+					const uint64 Hash = Hashes[Index];
+					if (Hash == 0)
+					{
+						ChildrenIndices.Indices[Index] = 0xFFFFFFFF;
+					}
+					else
+					{
+						ChildMask |= 1 << Index;
+						ChildrenIndices.Indices[Index] = uint32(MergedHashes.FindChecked(Hash));
+					}
+				}
+				const uint64 Hash = HashChildrenHashes(Hashes);
+
+				FCpuLevel TopLevel;
+				if (ChildMask != 0)
+				{
+					TopLevel.ChildMasks = TCpuArray<uint8>("ChildMasks", { ChildMask });
+					TopLevel.ChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", { ChildrenIndices });
+					TopLevel.Hashes = TCpuArray<uint64>("Hashes", { Hash });
+				}
+				CheckLevelIndices(TopLevel);
+
+				MergedDag.Levels.insert(MergedDag.Levels.begin(), TopLevel);
+
+				return MergedDag;
+			};
+			const auto MergeThreadInput = [&, MergePassIndex](uint32 DagIndex)
+			{
+				FDagChildren Dags;
+				TStaticArray<uint32, 8> ChildrenIndices;
+				for (int32 Index = 0; Index < 8; Index++)
+				{
+					ChildrenIndices[Index] = 8 * DagIndex + Index;
+				}
+				if (MergePassIndex == 0)
+				{
+					Dags = ExtractSubDagThread.GetResults(ChildrenIndices);
+					LOG("Subdags %u-%u/%u done", 8 * DagIndex + 1, 8 * DagIndex + 8, uint32(AABBs.size()));
+				}
+				else
+				{
+					Dags = MergeThreads[MergePassIndex - 1]->GetResults(ChildrenIndices);
+				}
+				return Dags;
+			};
+			char* Buffer = new char[1024];
+			sprintf(Buffer, "%d - MergeThread Pass %d", 5 + MergePassIndex, MergePassIndex);
+			MergeThreads[MergePassIndex] = std::make_unique<TIndexedThread<FDagChildren, FCpuDag>>(
+				Buffer,
+				MergeThreadInput,
+				MergeDagsThreadOutput,
+				4);
+		}
+
+		MARK("Threads started");
+
+		auto& MainThread = *MergeThreads.back();
+		const FCpuDag FinalDagData = MainThread.GetResult(0);
+
+		MARK("Threads done");
+
 #if ENABLE_COLORS
-	{
-		PROFILE_SCOPE_COLOR(COLOR_YELLOW, "Wait for merge colors");
-		MergeColorThread.join();
-		FinalDagData.Colors = MergedColors;
-	}
+		{
+			PROFILE_SCOPE_COLOR(COLOR_YELLOW, "Wait for merge colors");
+			MergeColorThread.join();
+			FinalDagData.Colors = MergedColors;
+		}
 #endif
+		FinalDag = CreateFinalDAG(std::move(FinalDagData));
+	}
+	
+	const double TotalElapsed = Utils::Seconds() - GlobalStartTime;
+	MARK("Done");
 
-	const auto FinalDag = CreateFinalDAG(std::move(FinalDagData));
+	cudaProfilerStop();
 
-	glfwMakeContextCurrent(MainWindow);
+	LOG("");
+	LOG("############################################################");
+	LOG("Total elapsed: %fs", TotalElapsed);
+	LOG("Total Fragments: %" PRIu64, TotalFragments.load());
+	LOG("Throughput: %f BV/s", TotalFragments.load() / TotalElapsed / 1.e9);
+	LOG("############################################################");
+	LOG("");
 
+	LOG("Peak CPU memory usage: %f MB", Utils::ToMB(FMemory::GetCpuMaxAllocatedMemory()));
+	LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
+
+	CheckDag(FinalDag);
+	
+	MakeContextCurrent(MainWindow);
 	return FinalDag;
 }

@@ -15,12 +15,12 @@ public:
 
 	void Enqueue(T Element)
 	{
-		std::lock_guard<std::mutex> Lock(Mutex);
+		FScopeLock Lock(Mutex);
 		Queue.push(Element);
 	}
 	bool Dequeue(T& Element)
 	{
-		std::unique_lock<std::mutex> Lock(Mutex);
+		FScopeLock Lock(Mutex);
 		if (Queue.empty()) return false;
 		Element = Queue.front();
 		Queue.pop();
@@ -28,13 +28,13 @@ public:
 	}
 	bool IsEmpty() const
 	{
-		std::unique_lock<std::mutex> Lock(Mutex);
+		FScopeLock Lock(Mutex);
 		return Queue.empty();
 	}
 	
 private:
 	std::queue<T> Queue;
-	mutable std::mutex Mutex;
+	mutable TracyLockable(std::mutex, Mutex)
 };
 
 class FThreadPool
@@ -49,12 +49,12 @@ private:
 	TSafeQueue<FTask> Tasks;
 	std::atomic<uint32> Stop{ 0 };
 
-	std::mutex OnEnqueueMutex;
-	std::condition_variable OnEnqueue;
+	TracyLockable(std::mutex, OnEnqueueMutex)
+	std::condition_variable_any OnEnqueue;
 	
 	std::atomic<uint32> WaitingThreads{ 0 };
-	std::mutex OnAllWaitingMutex;
-	std::condition_variable OnAllWaiting;
+	TracyLockable(std::mutex, OnAllWaitingMutex)
+	std::condition_variable_any OnAllWaiting;
 	
 public:
 	explicit FThreadPool(int32 NumThreads, const char* Name)
@@ -88,7 +88,7 @@ public:
 		else
 		{
 			const auto ShouldWakeup = [this]() { return WaitingThreads == Threads.size(); };
-			std::unique_lock<std::mutex> Lock(OnAllWaitingMutex);
+			FUniqueLock Lock(OnAllWaitingMutex);
 			OnAllWaiting.wait(Lock, ShouldWakeup);
 		}
 	}
@@ -126,7 +126,7 @@ private:
 			}
 			else
 			{
-				std::unique_lock<std::mutex> Lock(OnEnqueueMutex);
+				FUniqueLock Lock(OnEnqueueMutex);
 				if (WaitingThreads.fetch_add(1) + 1 == Threads.size())
 				{
 					OnAllWaiting.notify_all();

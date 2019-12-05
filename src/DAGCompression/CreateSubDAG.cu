@@ -50,13 +50,14 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 		const int32 Num = Cast<int32>(Fragments.Num());
 		const int32 NumBits = 3 * SUBDAG_LEVELS;
 		cub::DoubleBuffer<uint64> Keys(Fragments.GetData(), NewFragments.GetData());
-		
+
+		CUDA_SYNCHRONIZE_STREAM();
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes;
 		CUDA_CHECKED_CALL cub::DeviceRadixSort::SortKeys(TempStorage, TempStorageBytes, Keys, Num, 0, NumBits);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 		CUDA_CHECKED_CALL cub::DeviceRadixSort::SortKeys(TempStorage, TempStorageBytes, Keys, Num, 0, NumBits);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
 		if (Keys.Current() != NewFragments.GetData())
@@ -75,12 +76,13 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 		const int32 Num = Cast<int32>(Fragments.Num());
 		TSingleGPUElement<int32> NumUniqueGPU;
 		
+		CUDA_SYNCHRONIZE_STREAM();
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes;
 		CUDA_CHECKED_CALL cub::DeviceSelect2::Unique(TempStorage, TempStorageBytes, NewFragments.GetData(), Fragments.GetData(), NumUniqueGPU.GetPtr(), Num, EqualityLambda);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 		CUDA_CHECKED_CALL cub::DeviceSelect2::Unique(TempStorage, TempStorageBytes, NewFragments.GetData(), Fragments.GetData(), NumUniqueGPU.GetPtr(), Num, EqualityLambda);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
 		NumUnique = NumUniqueGPU.GetValue();
@@ -95,8 +97,7 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 	{
 		NewFragments.Free();
 		NewFragments = TGpuArray<uint64>("Fragments", NumUnique);
-		CUDA_CHECKED_CALL cudaMemcpyAsync(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
-		CUDA_SYNCHRONIZE_STREAM();
+		FMemory::CudaMemcpy(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	}
 	else
 	{
@@ -142,12 +143,13 @@ TGpuArray<uint64> DAGCompression::ExtractLeavesAndShiftReduceFragments(TGpuArray
 
 	TSingleGPUElement<int32> NumRunsGPU;
 	{
+		CUDA_SYNCHRONIZE_STREAM();
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes = 0;
 		CUDA_CHECKED_CALL cub::DeviceReduce::ReduceByKey(TempStorage, TempStorageBytes, ParentsBits, NewFragments.GetData(), LeavesBits, Leaves.GetData(), NumRunsGPU.GetPtr(), thrust::bit_or<uint64>(), Num);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 		CUDA_CHECKED_CALL cub::DeviceReduce::ReduceByKey(TempStorage, TempStorageBytes, ParentsBits, NewFragments.GetData(), LeavesBits, Leaves.GetData(), NumRunsGPU.GetPtr(), thrust::bit_or<uint64>(), Num);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 	}
 	
@@ -158,13 +160,11 @@ TGpuArray<uint64> DAGCompression::ExtractLeavesAndShiftReduceFragments(TGpuArray
 
 	Fragments.Free();
 	Fragments = TGpuArray<uint64>("Fragments", NumRuns);
-	CUDA_CHECKED_CALL cudaMemcpyAsync(Fragments.GetData(), NewFragments.GetData(), NumRuns * sizeof(uint64), cudaMemcpyDeviceToDevice);
-	CUDA_SYNCHRONIZE_STREAM();
+	FMemory::CudaMemcpy(Fragments.GetData(), NewFragments.GetData(), NumRuns * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	NewFragments.Free();
 
 	auto ShrunkLeaves = TGpuArray<uint64>("Leaves", NumRuns);
-	CUDA_CHECKED_CALL cudaMemcpyAsync(ShrunkLeaves.GetData(), Leaves.GetData(), NumRuns * sizeof(uint64), cudaMemcpyDeviceToDevice);
-	CUDA_SYNCHRONIZE_STREAM();
+	FMemory::CudaMemcpy(ShrunkLeaves.GetData(), Leaves.GetData(), NumRuns * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	Leaves.Free();
 
 	return ShrunkLeaves;
@@ -189,13 +189,14 @@ void SortLevelImpl(bool IsLeaf, FGpuLevel& Level, TGpuArray<uint32>& OutHashesTo
 
 		cub::DoubleBuffer<uint64> Keys(Level.Hashes.GetData(), SortedHashes.GetData());
 		cub::DoubleBuffer<uint32> Values(Sequence.GetData(), SortedHashesToHashes.GetData());
-
+		
+		CUDA_SYNCHRONIZE_STREAM();
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes;
 		CUDA_CHECKED_CALL cub::DeviceRadixSort::SortPairs(TempStorage, TempStorageBytes, Keys, Values, NumHashes, 0, 64);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 		CUDA_CHECKED_CALL cub::DeviceRadixSort::SortPairs(TempStorage, TempStorageBytes, Keys, Values, NumHashes, 0, 64);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
 		if (Keys.Current() != SortedHashes.GetData())
@@ -220,12 +221,13 @@ void SortLevelImpl(bool IsLeaf, FGpuLevel& Level, TGpuArray<uint32>& OutHashesTo
 
 	auto SortedHashesToUniqueHashes = TGpuArray<uint32>("SortedHashesToUniqueHashes", NumHashes);
 	{
+		CUDA_SYNCHRONIZE_STREAM();
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes;
 		CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(TempStorage, TempStorageBytes, SortedHashesFlags.GetData(), SortedHashesToUniqueHashes.GetData(), NumHashes);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 		CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(TempStorage, TempStorageBytes, SortedHashesFlags.GetData(), SortedHashesToUniqueHashes.GetData(), NumHashes);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 	}
 	SortedHashesFlags.Free();
@@ -294,12 +296,13 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>&
 			auto UniqueParentsFlags = TGpuArray<uint32>("UniqueParentsFlags", Num);
 			AdjacentDifferenceWithTransform(Fragments, ParentsTransform, UniqueParentsFlags, thrust::not_equal_to<uint64>(), 0u);
 			{
+				CUDA_SYNCHRONIZE_STREAM();
 				void* TempStorage = nullptr;
 				size_t TempStorageBytes;
 				CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(TempStorage, TempStorageBytes, UniqueParentsFlags.GetData(), UniqueParentsSum.GetData(), Num);
 				CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 				CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(TempStorage, TempStorageBytes, UniqueParentsFlags.GetData(), UniqueParentsSum.GetData(), Num);
-				CUDA_CHECK_ERROR();
+				CUDA_SYNCHRONIZE_STREAM();
 				CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 			}
 			UniqueParentsFlags.Free();
@@ -326,13 +329,14 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>&
 		const auto ChildrenBits = TransformIterator(Fragments.GetData(), ChildrenTransform);
 
 		TSingleGPUElement<int32> NumRunsGPU;
-
+		
+		CUDA_SYNCHRONIZE_STREAM();
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes = 0;
 		CUDA_CHECKED_CALL cub::DeviceReduce::ReduceByKey(TempStorage, TempStorageBytes, ParentsBits, NewFragments.GetData(), ChildrenBits, OutLevel.ChildMasks.GetData(), NumRunsGPU.GetPtr(), thrust::bit_or<uint8>(), Num);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 		CUDA_CHECKED_CALL cub::DeviceReduce::ReduceByKey(TempStorage, TempStorageBytes, ParentsBits, NewFragments.GetData(), ChildrenBits, OutLevel.ChildMasks.GetData(), NumRunsGPU.GetPtr(), thrust::bit_or<uint8>(), Num);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
 		checkEqual(NumUniqueParents, NumRunsGPU.GetValue());
@@ -361,8 +365,7 @@ FCpuDag DAGCompression::CreateSubDAG(TGpuArray<uint64>& InFragments)
 
 	{
 		auto InFragmentsCopy = TGpuArray<uint64>("FragmentsCopy", InFragments.Num());
-		CUDA_CHECKED_CALL cudaMemcpyAsync(InFragmentsCopy.GetData(), InFragments.GetData(), InFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
-		CUDA_SYNCHRONIZE_STREAM();
+		FMemory::CudaMemcpy(InFragmentsCopy.GetData(), InFragments.GetData(), InFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
 		Fragments = SortFragmentsAndRemoveDuplicates(std::move(InFragmentsCopy));
 	}
 	

@@ -537,7 +537,7 @@ __global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, cons
 	{
 		color = float3_to_rgb888(make_float3(p.x & 0xFF, p.y & 0xFF, p.z & 0xFF) / make_float3(0xFF));
 	}
-	if (0 <= traceParams.DebugLevel && traceParams.DebugLevel < LEVELS)
+	if (traceParams.DebugLevel < LEVELS)
 	{
 		color = Utils::MurmurHash32(DebugIndex);
 	}
@@ -550,7 +550,7 @@ void FDAGTracer::ResolvePaths(
 	const TGpuArray<uint32>& Colors,
 	const TGpuArray<uint64>& EnclosedLeaves)
 {
-	CUDA_CHECK_ERROR();
+	CUDA_CHECK_ERROR_ALWAYS();
 
 	ColorsBuffer.MapSurface();
 	
@@ -559,7 +559,8 @@ void FDAGTracer::ResolvePaths(
 	
 	trace_paths <<< grid_dim, block_dim >>> (Params, { Dag }, { Colors, EnclosedLeaves }, ColorsBuffer.CudaSurface);
 
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_ERROR_ALWAYS();
 	
 	ColorsBuffer.UnmapSurface();
 }

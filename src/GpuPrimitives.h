@@ -67,6 +67,7 @@ inline void CheckIsSorted(const TFixedArray<T, MemoryType>& Array)
 {
 	(void)Array;
 #if ENABLE_CHECKS
+	CUDA_CHECK_ERROR();
 	const auto Check = [=] GPU_LAMBDA (uint64 Index)
 	{
 		checkf(Array[Index] <= Array[Index + 1], "%" PRIu64 " <= %" PRIu64 " (Index %" PRIu64 ")", uint64(Array[Index]), uint64(Array[Index + 1]), Index);
@@ -103,6 +104,7 @@ inline void CheckFunctionBoundsIf(
 	(void)MinOutput;
 	(void)MaxOutput;
 #if ENABLE_CHECKS
+	CUDA_CHECK_ERROR();
 	const auto Check = [=] GPU_LAMBDA (TIn Value)
 	{
 		if (!Condition(Value)) return;
@@ -149,6 +151,7 @@ inline void CheckFunctionIsInjectiveIf(
 	(void)MaxInput;
 	(void)NumOutputs;
 #if ENABLE_CHECKS
+	CUDA_CHECK_ERROR();
 #if 0 // Strict injectivity is probably not needed: we just need to write the same values
 	auto Counters = TGpuArray<uint64>("Counters", NumOutputs);
 	Counters.MemSet(0);
@@ -311,11 +314,13 @@ namespace cub
 template<typename T>
 inline void SetElement(TGpuArray<T>& Array, uint64 Index, T Value)
 {
+	CUDA_SYNCHRONIZE_STREAM();
 	FMemory::SetGPUValue(&Array[Index], Value);
 }
 template<typename T>
 inline T GetElement(const TGpuArray<T>& Array, uint64 Index)
 {
+	CUDA_SYNCHRONIZE_STREAM();
 	return FMemory::ReadGPUValue(&Array[Index]);
 }
 
@@ -326,6 +331,8 @@ inline void AdjacentDifference(
 	F1 BinaryOp,
 	OutType FirstElement)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	checkEqual(In.Num(), Out.Num())
 
 	thrust::transform(
@@ -335,9 +342,11 @@ inline void AdjacentDifference(
 		In.GetData(),
 		Out.GetData() + 1,
 		BinaryOp);
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	SetElement(Out, 0, FirstElement);
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename InType, typename OutType, typename F1, typename F2>
@@ -347,6 +356,8 @@ inline void AdjacentDifferenceWithTransform(
 	F2 BinaryOp,
 	OutType FirstElement)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	checkEqual(In.Num(), Out.Num())
 
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
@@ -357,9 +368,12 @@ inline void AdjacentDifferenceWithTransform(
 		It,
 		Out.GetData() + 1,
 		BinaryOp);
+	
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	SetElement(Out, 0, FirstElement);
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename MapFunction>
@@ -368,6 +382,8 @@ inline void ScatterPred(
 	MapFunction Map,
 	TGpuArray<TypeOut>& Out)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	CheckFunctionBounds(Map, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjective(In, Map, uint64(0), In.Num() - 1, Out.Num());
 	
@@ -379,7 +395,7 @@ inline void ScatterPred(
 		MapTransform,
 		Out.GetData());
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename IndexType>
@@ -388,6 +404,8 @@ inline void Scatter(
 	const TGpuArray<IndexType>& Map,
 	TGpuArray<TypeOut>& Out)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	CheckArrayBounds(Map, IndexType(0), IndexType(Out.Num() - 1));
 	CheckArrayIsInjective(In, Map, Out.Num());
 	
@@ -398,7 +416,7 @@ inline void Scatter(
 		Map.GetData(),
 		Out.GetData());
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename InF, typename IndexType>
@@ -407,6 +425,8 @@ inline void ScatterWithTransform(
 	const TGpuArray<IndexType>& Map,
 	TGpuArray<TypeOut>& Out)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	CheckArrayBounds<IndexType>(Map, 0, IndexType(Out.Num()) - 1);
 	
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
@@ -420,7 +440,7 @@ inline void ScatterWithTransform(
 		Map.GetData(),
 		Out.GetData());
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename MapFunction, typename F>
@@ -430,6 +450,8 @@ inline void ScatterIf(
 	TGpuArray<TypeOut>& Out,
 	F Condition)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
 	
@@ -443,7 +465,7 @@ inline void ScatterIf(
 		Out.GetData(),
 		Condition);
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename InF, typename MapFunction, typename F>
@@ -453,6 +475,8 @@ inline void ScatterIfWithTransform(
 	TGpuArray<TypeOut>& Out,
 	F Condition)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
 	
@@ -467,7 +491,7 @@ inline void ScatterIfWithTransform(
 		Out.GetData(),
 		Condition);
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename InType, typename OutType, typename F>
@@ -476,6 +500,8 @@ inline void Transform(
 	TGpuArray<OutType>& Out,
 	F Lambda)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	checkEqual(In.Num(), Out.Num())
 	
 	thrust::transform(
@@ -485,7 +511,7 @@ inline void Transform(
 		Out.GetData(),
 		Lambda);
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename InType, typename OutType, typename F1, typename F2>
@@ -496,6 +522,8 @@ inline void TransformIf(
 	F1 Lambda,
 	F2 Condition)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	thrust::transform_if(
 		ExecutionPolicy,
 		In,
@@ -504,7 +532,7 @@ inline void TransformIf(
 		Lambda,
 		Condition);
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TValueIt, typename TKey, typename TValue, typename F>
@@ -517,6 +545,8 @@ inline void MergePairs(
 	TGpuArray<TValue>& OutValues,
 	F Comp)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	checkEqual(OutKeys.Num(), OutValues.Num());
 	checkEqual(InKeysA.Num() + InKeysB.Num(), OutValues.Num());
 
@@ -541,7 +571,7 @@ inline void MergePairs(
 		}
 		void synchronize() override
 		{
-			CUDA_CHECK_ERROR();
+			CUDA_SYNCHRONIZE_STREAM();
 		}
 	};
 	static mgpu_context_t* mgpu_context = nullptr;
@@ -556,13 +586,16 @@ inline void MergePairs(
 		OutKeys.GetData(), OutValues.GetData(),
 		Comp,
 		*mgpu_context);
-	CUDA_CHECK_ERROR();
+	
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename T>
 inline void MakeSequence(TGpuArray<T>& Array, T Init = 0)
 {
+	CUDA_SYNCHRONIZE_STREAM();
+	
 	thrust::sequence(ExecutionPolicy, Array.GetData(), Array.GetData() + Array.Num(), Init);
 	
-	CUDA_CHECK_ERROR();
+	CUDA_SYNCHRONIZE_STREAM();
 }

@@ -12,12 +12,13 @@ uint32 ComputeChildPositions(const FGpuLevel& Level, TGpuArray<uint32>& ChildPos
 	const auto NodeSizes = thrust::make_transform_iterator(Level.ChildMasks.GetData(),  [] GPU_LAMBDA (uint8 ChildMask) { return Utils::TotalSize(ChildMask); });
 
 	{
+		CUDA_SYNCHRONIZE_STREAM();
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes;
 		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(TempStorage, TempStorageBytes, NodeSizes, ChildPositions.GetData(), Num);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
 		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(TempStorage, TempStorageBytes, NodeSizes, ChildPositions.GetData(), Num);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 	}
 	
@@ -165,8 +166,7 @@ void SetLeavesCountsCpu(FFinalDag& Dag)
 	TGpuArray<uint32> GpuIndices("Indices", Indices.size());
 	{
 		PROFILE_SCOPE("Memcpy");
-		CUDA_CHECKED_CALL cudaMemcpyAsync(GpuIndices.GetData(), &Indices[0], GpuIndices.SizeInBytes(), cudaMemcpyHostToDevice);
-		CUDA_SYNCHRONIZE_STREAM();
+		FMemory::CudaMemcpy(GpuIndices.GetData(), &Indices[0], GpuIndices.SizeInBytes(), cudaMemcpyHostToDevice);
 	}
 
 	auto GpuCounts = CpuCounts.CreateGPU();
@@ -187,11 +187,7 @@ void SetLeavesCountsCpu(FFinalDag& Dag)
 	if (!EnclosedLeaves.empty())
 	{
 		Dag.EnclosedLeaves = TGpuArray<uint64>("EnclosedLeaves", EnclosedLeaves.size());
-		{
-			PROFILE_SCOPE("Memcpy");
-			CUDA_CHECKED_CALL cudaMemcpyAsync(Dag.EnclosedLeaves.GetData(), &EnclosedLeaves[0], Dag.EnclosedLeaves.SizeInBytes(), cudaMemcpyHostToDevice);
-			CUDA_SYNCHRONIZE_STREAM();
-		}
+		FMemory::CudaMemcpy(Dag.EnclosedLeaves.GetData(), &EnclosedLeaves[0], Dag.EnclosedLeaves.SizeInBytes(), cudaMemcpyHostToDevice);
 	}
 }
 
@@ -258,8 +254,7 @@ FFinalDag DAGCompression::CreateFinalDAG(FCpuDag CpuDag)
 		Offset += LevelInfo.NumWords;
 	}
 	checkEqual(Offset + 2 * Leaves.Num(), Num);
-	CUDA_CHECKED_CALL cudaMemcpyAsync(Dag.GetData() + Offset, Leaves.GetData(), Leaves.Num() * sizeof(uint64), cudaMemcpyDeviceToDevice);
-	CUDA_SYNCHRONIZE_STREAM();
+	FMemory::CudaMemcpy(Dag.GetData() + Offset, reinterpret_cast<uint32*>(Leaves.GetData()), Leaves.Num() * sizeof(uint64), cudaMemcpyDeviceToDevice);
 
 	for (auto& Level : Levels)
 	{

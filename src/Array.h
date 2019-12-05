@@ -8,8 +8,20 @@ template<typename ElementType, uint64 ArraySize>
 struct TStaticArray
 {
 	using TElementType = ElementType;
-	
+
 	TStaticArray() = default;
+	explicit TStaticArray(ElementType Value)
+	{
+		for (auto& It : *this)
+		{
+			It = Value;
+		}
+	}
+	TStaticArray(std::initializer_list<TElementType> List)
+	{
+		check(List.size() == ArraySize);
+		std::memcpy(ArrayData, List.begin(), SizeInBytes());
+	}
 
 	void MemSet(uint8 Value)
 	{
@@ -200,15 +212,13 @@ struct TFixedArray
 	{
 		static_assert(MemoryType == EMemoryType::CPU, "");
 		check(GpuArray.Num() == Num());
-		CUDA_CHECKED_CALL cudaMemcpyAsync(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
-		CUDA_SYNCHRONIZE_STREAM();
+		FMemory::CudaMemcpy(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
 	}
 	HOST void CopyToCPU(TFixedArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
 	{
 		static_assert(MemoryType == EMemoryType::GPU, "");
 		check(CpuArray.Num() == Num());
-		CUDA_CHECKED_CALL cudaMemcpyAsync(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
-		CUDA_SYNCHRONIZE_STREAM();
+		FMemory::CudaMemcpy(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
 	}
 
 	HOST void MemSet(uint8 Value)
@@ -395,8 +405,7 @@ public:
 			GPUArray.Reserve(this->GetAllocatedSize() - GPUArray.GetAllocatedSize());
 		}
 		GPUArray.ArraySize = this->Num();
-		CUDA_CHECKED_CALL cudaMemcpyAsync(GPUArray.GetData(), this->GetData(), this->SizeInBytes(), cudaMemcpyHostToDevice);
-		CUDA_SYNCHRONIZE_STREAM();
+		FMemory::CudaMemcpy(GPUArray.GetData(), this->GetData(), this->SizeInBytes(), cudaMemcpyHostToDevice);
 	}
 
 	HOST_DEVICE TSize GetAllocatedSize() const
