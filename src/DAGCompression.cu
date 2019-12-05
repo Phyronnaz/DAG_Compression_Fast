@@ -26,6 +26,56 @@ HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const T
 	return HashChildrenHashes(ChildrenHashes);
 }
 
+template<typename T>
+inline void CheckLevelIndices(const T& Level)
+{
+	(void)Level;
+#if ENABLE_CHECKS
+	const auto ChildrenIndices = Level.ChildrenIndices.template CastTo<uint32>();
+	const auto ChildMasks = Level.ChildMasks;
+	const auto Check = [=] GPU_LAMBDA (uint64 Index)
+	{
+		const uint64 NodeIndex = Index / 8;
+		const uint64 ChildIndex = Index % 8;
+		const uint8 ChildMask = ChildMasks[NodeIndex];
+		if ((ChildrenIndices[Index] == 0xFFFFFFFF) != !(ChildMask & (1 << ChildIndex)))
+		{
+			printf("Invalid Children Indices:\n"
+				"0x%08x : %i\n"
+				"0x%08x : %i\n"
+				"0x%08x : %i\n"
+				"0x%08x : %i\n"
+				"0x%08x : %i\n"
+				"0x%08x : %i\n"
+				"0x%08x : %i\n"
+				"0x%08x : %i\n",
+				ChildrenIndices[8 * NodeIndex + 0], bool(ChildMask & 0x01),
+				ChildrenIndices[8 * NodeIndex + 1], bool(ChildMask & 0x02),
+				ChildrenIndices[8 * NodeIndex + 2], bool(ChildMask & 0x04),
+				ChildrenIndices[8 * NodeIndex + 3], bool(ChildMask & 0x08),
+				ChildrenIndices[8 * NodeIndex + 4], bool(ChildMask & 0x10),
+				ChildrenIndices[8 * NodeIndex + 5], bool(ChildMask & 0x20),
+				ChildrenIndices[8 * NodeIndex + 6], bool(ChildMask & 0x40),
+				ChildrenIndices[8 * NodeIndex + 7], bool(ChildMask & 0x80));
+			DEBUG_BREAK();
+		}
+	};
+	if (ChildrenIndices.GetMemoryType() == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
+	{
+		const auto It = thrust::make_counting_iterator<uint64>(0);
+		thrust::for_each(ExecutionPolicy, It, It + ChildrenIndices.Num(), Check);
+		CUDA_CHECK_ERROR();
+	}
+	else
+	{
+		for (uint64 Index = 0; Index < ChildrenIndices.Num(); Index++)
+		{
+			Check(Index);
+		}
+	}
+#endif	
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -56,6 +106,8 @@ uint32 ComputeChildPositions(const FGpuLevel& Level, TStaticArray<uint32, EMemor
 template<typename T>
 void WriteLevelTo(const FGpuLevel& Level, const TStaticArray<uint32, EMemoryType::GPU>& ChildPositions, TStaticArray<uint32, EMemoryType::GPU>& Data, T GetChildIndex)
 {
+	CheckLevelIndices(Level);
+	
 	Scatter(Level.ChildMasks, ChildPositions, Data);
 
 	const auto ChildrenIndices = Level.ChildrenIndices.CastTo<uint32>();
@@ -63,9 +115,16 @@ void WriteLevelTo(const FGpuLevel& Level, const TStaticArray<uint32, EMemoryType
 
 	ScatterIfWithTransform(
 		ChildrenIndices, [=] GPU_LAMBDA(uint32 Index) { return Index == 0xFFFFFFFF ? Index : GetChildIndex(Index); },
-		[=] GPU_LAMBDA (uint64 Index) { return ChildPositions[Index / 8] + Utils::ChildOffset(ChildMasks[Index / 8], Index % 8); },
+		[=] GPU_LAMBDA (uint64 Index)
+		{
+			return ChildPositions[Index / 8] + Utils::ChildOffset(ChildMasks[Index / 8], Index % 8);
+		},
 		Data,
-		[=] GPU_LAMBDA (uint64 Index) { check((ChildrenIndices[Index] == 0xFFFFFFFF) == !(ChildMasks[Index / 8] & (1 << (Index % 8)))); return ChildrenIndices[Index] != 0xFFFFFFFF; });
+		[=] GPU_LAMBDA (uint64 Index)
+		{
+			checkf((ChildrenIndices[Index] == 0xFFFFFFFF) == !(ChildMasks[Index / 8] & (1 << (Index % 8))), "Index: %" PRIu64, Index);
+			return ChildrenIndices[Index] != 0xFFFFFFFF;
+		});
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -321,19 +380,21 @@ uint32 Merge(
 	check(!OutIndicesAToMergedIndices.IsValid());
 	check(!OutIndicesBToMergedIndices.IsValid());
 
+	CheckIsSorted(KeysA);
+	CheckIsSorted(KeysB);
+
 	const int32 NumToMerge = Cast<int32>(KeysA.Num() + KeysB.Num());
 	auto KeysAB = TStaticArray<uint64, EMemoryType::GPU>("KeysAB", NumToMerge);
 	auto Permutation = TStaticArray<uint32, EMemoryType::GPU>("Permutation", NumToMerge);
-	{
-		MergePairs(
-			KeysA,
-			thrust::make_counting_iterator<uint32>(0u),
-			KeysB,
-			thrust::make_counting_iterator<uint32>(1u << 31),
-			KeysAB,
-			Permutation,
-			thrust::less<uint64>());
-	}
+	MergePairs(
+		KeysA,
+		thrust::make_counting_iterator<uint32>(0u),
+		KeysB,
+		thrust::make_counting_iterator<uint32>(1u << 31),
+		KeysAB,
+		Permutation,
+		thrust::less<uint64>());
+	CheckIsSorted(KeysAB);
 
 	auto UniqueSum = TStaticArray<uint32, EMemoryType::GPU>("UniqueSum", NumToMerge);
 	{
@@ -356,6 +417,7 @@ uint32 Merge(
 
 	OutIndicesAToMergedIndices = TStaticArray<uint32, EMemoryType::GPU>("IndicesAToMergedIndices", KeysA.Num());
 	OutIndicesBToMergedIndices = TStaticArray<uint32, EMemoryType::GPU>("IndicesBToMergedIndices", KeysB.Num());
+
 	ScatterIf(
 		UniqueSum, 
 		[=] GPU_LAMBDA (uint64 Index) { return Utils::ClearFlag(Permutation[Index]); },
@@ -366,6 +428,9 @@ uint32 Merge(
 		[=] GPU_LAMBDA (uint64 Index) { return Utils::ClearFlag(Permutation[Index]); },
 		OutIndicesBToMergedIndices,
 		[=] GPU_LAMBDA (uint64 Index) { return Utils::HasFlag(Permutation[Index]); });
+
+	CheckArrayBounds<uint32>(OutIndicesAToMergedIndices, 0, NumUniques - 1);
+	CheckArrayBounds<uint32>(OutIndicesBToMergedIndices, 0, NumUniques - 1);
 
 	UniqueSum.Free();
 	Permutation.Free();
@@ -510,7 +575,9 @@ inline FCpuDag MergeDAGs(
 			MergedLevel.ChildrenIndices = MergedChildrenIndices.CreateCPU();
 			MergedChildrenIndices.Free();
 		}
-
+		
+		CheckLevelIndices(MergedLevel);
+		CheckIsSorted(MergedLevel.Hashes);
 		MergedCpuDag.Levels[LevelIndex] = MergedLevel;
 
 		PreviousIndicesAToMergedIndices.Free();
@@ -562,15 +629,18 @@ FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 		MergedColors = TStaticArray<uint32, EMemoryType::CPU>("Colors", Num);
 
 		std::vector<std::thread> Threads;
-		for (uint32 Index = 0; Index < ColorsToMerge.size(); ++Index)
+		for (uint32 Index = 0; Index < ColorsToMerge.size(); Index++)
 		{
-			Threads.emplace_back([Index, &ColorsToMerge, &Offsets, &MergedColors]()
+			if (ColorsToMerge[Index].Num() > 0) // Else we might memcpy an invalid ptr
 			{
-				NAME_THREAD("MergeColorThreadPool");
-				std::memcpy(&MergedColors[Offsets[Index]], ColorsToMerge[Index].GetData(), ColorsToMerge[Index].SizeInBytes());
-				ColorsToMerge[Index].Free();
-			});
-			Threads.back().join(); // TODO HACK
+				Threads.emplace_back([Index, &ColorsToMerge, &Offsets, &MergedColors]()
+					{
+						NAME_THREAD("MergeColorThreadPool");
+						std::memcpy(&MergedColors[Offsets[Index]], ColorsToMerge[Index].GetData(), ColorsToMerge[Index].SizeInBytes());
+						ColorsToMerge[Index].Free();
+					});
+				Threads.back().join(); // TODO HACK
+			}
 		}
 		for(auto& Thread : Threads)
 		{
@@ -655,6 +725,9 @@ FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 					TopLevel.ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::CPU>("ChildrenIndices", { ChildrenIndices });
 					TopLevel.Hashes = TStaticArray<uint64, EMemoryType::CPU>("Hashes", { Hash });
 				}
+				CheckLevelIndices(TopLevel);
+				CheckIsSorted(TopLevel.Hashes);
+				
 				MergedDag.Levels.insert(MergedDag.Levels.begin(), TopLevel);
 
 				NewCpuDags[SubDagIndex] = MergedDag;
@@ -797,8 +870,12 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::SortFragmentsAndRemoveDup
 		CUDA_CHECK_ERROR();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
-		// For some reason the data ends up in Fragments
-		check(Fragments.GetData() == Keys.Current());
+		// Ends up in different buffers on different GPUs
+		if (Keys.Current() != Fragments.GetData())
+		{
+			CUDA_CHECKED_CALL cudaMemcpyAsync(Fragments.GetData(), NewFragments.GetData(), Num * sizeof(uint64), cudaMemcpyDeviceToDevice);
+			CUDA_SYNCHRONIZE_STREAM();
+		}
 	}
 
 	int32 NumUnique;
@@ -818,15 +895,20 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::SortFragmentsAndRemoveDup
 
 		NumUnique = NumUniqueGPU.GetValue();
 	}
+	checkInf(NumUnique, Fragments.Num());
 
 	// Shrink
-#if 1
+#if 0
 	CUDA_CHECKED_CALL cudaMemcpyAsync(Fragments.GetData(), NewFragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	CUDA_SYNCHRONIZE_STREAM();
 	NewFragments.Free();
 	NewFragments = TStaticArray<uint64, EMemoryType::GPU>("Fragments", NumUnique);
 	CUDA_CHECKED_CALL cudaMemcpyAsync(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	CUDA_SYNCHRONIZE_STREAM();
+#else
+	const auto New = TStaticArray<uint64, EMemoryType::GPU>(NewFragments.GetData(), Cast<uint32>(NumUnique));
+	NewFragments.Reset();
+	NewFragments = New;
 #endif
 
 	return NewFragments;
@@ -895,8 +977,10 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 {
 	PROFILE_FUNCTION();
 
+	CheckLevelIndices(Level);
+
 	const bool IsLeaf = Level.ChildrenIndices.Num() == 0;
-	
+
 	const int32 NumHashes = Cast<int32>(Level.Hashes.Num());
 	auto SortedHashes = TStaticArray<uint64, EMemoryType::GPU>("SortedHashes", NumHashes);
 	auto SortedHashesToHashes = TStaticArray<uint32, EMemoryType::GPU>("SortedHashesToHashes", NumHashes);
@@ -917,10 +1001,22 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 		CUDA_CHECK_ERROR();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
+		if (Keys.Current() != SortedHashes.GetData())
+		{
+			check(Keys.Current() == Level.Hashes.GetData());
+			std::swap(SortedHashes, Level.Hashes);
+		}
+		if (Values.Current() != SortedHashesToHashes.GetData())
+		{
+			check(Values.Current() == Sequence.GetData());
+			std::swap(SortedHashesToHashes, Sequence);
+		}
+
 		// Level hashes are trashed by the sort
 		Level.Hashes.Free();
 		Sequence.Free();
 	}
+	CheckIsSorted(SortedHashes);
 
 	auto SortedHashesFlags = TStaticArray<uint32, EMemoryType::GPU>("SortedHashesFlags", NumHashes);
 	AdjacentDifference(SortedHashes, SortedHashesFlags, thrust::not_equal_to<uint64>(), 0u);
@@ -942,9 +1038,11 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 	Level.Hashes = TStaticArray<uint64, EMemoryType::GPU>(IsLeaf ? "Leaves" : "Hashes", NumUniques);
 	Scatter(SortedHashes, SortedHashesToUniqueHashes, Level.Hashes);
 	SortedHashes.Free();
+	CheckIsSorted(Level.Hashes);
 
 	OutHashesToSortedUniqueHashes = TStaticArray<uint32, EMemoryType::GPU>("HashesToSortedUniqueHashes", NumHashes);
 	Scatter(SortedHashesToUniqueHashes, SortedHashesToHashes, OutHashesToSortedUniqueHashes);
+	CheckArrayBounds(OutHashesToSortedUniqueHashes, 0u, NumUniques - 1);
 	SortedHashesToHashes.Free();
 	SortedHashesToUniqueHashes.Free();
 
@@ -963,6 +1061,8 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 			Level.ChildMasks = NewChildMasks;
 		}
 	}
+
+	CheckLevelIndices(Level);
 }
 
 FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments, const TStaticArray<uint32, EMemoryType::GPU>& FragmentIndicesToChildrenIndices)
@@ -1028,17 +1128,10 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TStaticArray<uint6
 		checkEqual(NumUniqueParents, NumRunsGPU.GetValue());
 	}
 
-#if ENABLE_CHECKS && DEBUG_GPU_ARRAYS
-	const auto ChildrenIndicesArray = OutLevel.ChildrenIndices.CastTo<uint32>();
-	for (uint64 Index = 0; Index < ChildrenIndicesArray.Num(); Index++)
-	{
-		check((ChildrenIndicesArray[Index] == 0xFFFFFFFF) == !(OutLevel.ChildMasks[Index / 8] & (1 << (Index % 8))));
-	}
-#endif
-
 	Fragments.Free();
 	Fragments = NewFragments;
 
+	CheckLevelIndices(OutLevel);
 	return OutLevel;
 }
 
@@ -1046,4 +1139,26 @@ void DAGCompression::ComputeHashes(FGpuLevel& Level, const TStaticArray<uint64, 
 {
 	Level.Hashes = TStaticArray<uint64, EMemoryType::GPU>("Hashes", Level.ChildrenIndices.Num());
 	Transform(Level.ChildrenIndices, Level.Hashes, [=] GPU_LAMBDA (const FChildrenIndices & Children) { return HashChildren(Children, LowerLevelHashes); });
+
+#if ENABLE_CHECKS && DEBUG_GPU_ARRAYS
+	std::unordered_map<uint64, FChildrenIndices> HashesToIndices;
+	for (uint64 Index = 0; Index < Level.Hashes.Num(); Index++)
+	{
+		const uint64 Hash = Level.Hashes[Index];
+		const FChildrenIndices ChildrenIndices = Level.ChildrenIndices[Index];
+
+		const auto ExistingIndices = HashesToIndices.find(Hash);
+		if (ExistingIndices == HashesToIndices.end())
+		{
+			HashesToIndices[Hash] = ChildrenIndices;
+		}
+		else
+		{
+			for (int32 ChildIndex = 0; ChildIndex < 8; ChildIndex++)
+			{
+				checkEqual(ChildrenIndices.Indices[ChildIndex], ExistingIndices->second.Indices[ChildIndex]);
+			}
+		}
+	}
+#endif
 }

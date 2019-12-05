@@ -76,7 +76,7 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 	}
 
 	{
-        std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+        std::lock_guard<std::mutex> Guard(Mutex);
 		if (Type == EMemoryType::GPU)
 		{
 			TotalAllocatedGpuMemory += Size;
@@ -103,7 +103,7 @@ void FMemory::FreeImpl(void* Ptr)
 
 	FAlloc Alloc;
 	{
-		std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		std::lock_guard<std::mutex> Guard(Mutex);
 		checkAlways(Allocations.find(Ptr) != Allocations.end());
 		Alloc = Allocations[Ptr];
 		Allocations.erase(Ptr);
@@ -124,7 +124,7 @@ void FMemory::FreeImpl(void* Ptr)
 	}
 
 	{
-		std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		std::lock_guard<std::mutex> Guard(Mutex);
 		if (Alloc.Type == EMemoryType::GPU)
 		{
 			TotalAllocatedGpuMemory -= Alloc.Size;
@@ -146,7 +146,7 @@ void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 	const auto OldPtr = Ptr;
 	FAlloc OldAlloc;
 	{
-		std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+		std::lock_guard<std::mutex> Guard(Mutex);
 		checkAlways(Ptr);
 		checkAlways(Allocations.find(Ptr) != Allocations.end());
 		OldAlloc = Allocations[Ptr];
@@ -187,7 +187,7 @@ void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, 
 {
 	PROFILE_FUNCTION();
 
-	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+	std::lock_guard<std::mutex> Guard(Mutex);
 	checkAlways(Ptr);
 	checkAlways(Allocations.find(Ptr) == Allocations.end());
 	checkAlways(Size != 0);
@@ -210,7 +210,7 @@ void FMemory::UnregisterCustomAllocImpl(void* Ptr)
 {
 	PROFILE_FUNCTION();
 
-	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+	std::lock_guard<std::mutex> Guard(Mutex);
 	checkAlways(Allocations.find(Ptr) != Allocations.end());
 	auto& Alloc = Allocations[Ptr];
 	if (Alloc.Type == EMemoryType::GPU)
@@ -228,7 +228,7 @@ void FMemory::UnregisterCustomAllocImpl(void* Ptr)
 
 FMemory::FAlloc FMemory::GetAllocInfoImpl(void* Ptr) const
 {
-	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+	std::lock_guard<std::mutex> Guard(Mutex);
 	checkAlways(Ptr);
     checkAlways(Allocations.find(Ptr) != Allocations.end());
     return Allocations.at(Ptr);
@@ -236,7 +236,7 @@ FMemory::FAlloc FMemory::GetAllocInfoImpl(void* Ptr) const
 
 std::string FMemory::GetStatsStringImpl() const
 {
-	std::lock_guard<std::mutex> Guard(Singleton.Mutex);
+	std::lock_guard<std::mutex> Guard(Mutex);
 	
     struct AllocCount
     {

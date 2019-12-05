@@ -249,7 +249,7 @@ int main()
 			
 			cnmemDevice_t Device;
 			std::memset(&Device, 0, sizeof(Device));
-			Device.size = size_t(5) * (size_t(1) << 30);
+			Device.size = size_t(3) * (size_t(1) << 30);
 			uint32 Flags = CNMEM_FLAGS_DEFAULT | CNMEM_FLAGS_CANNOT_GROW | CNMEM_FLAGS_CANNOT_STEAL;
 #if DEBUG_GPU_ARRAYS
 			Flags |= CNMEM_FLAGS_MANAGED;

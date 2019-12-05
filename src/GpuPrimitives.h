@@ -35,38 +35,55 @@ inline auto TransformIterator(const T* Ptr, F Lambda)
 	return cub::TransformInputIterator<const TReturnType, F, const T*>(Ptr, Lambda);
 }
 
-template<typename T>
-inline void CheckArrayBounds(const TStaticArray<T, EMemoryType::GPU>& Array, T Min, T Max)
+template<typename T, EMemoryType MemoryType>
+inline void CheckEqual(const TStaticArray<T, MemoryType>& ArrayA, const TStaticArray<T, MemoryType>& ArrayB)
 {
+	(void)ArrayA;
+	(void)ArrayB;
 #if ENABLE_CHECKS
-	const auto Check = [=] GPU_LAMBDA (T Value)
+	checkEqual(ArrayA.Num(), ArrayB.Num());
+	const auto Check = [=] GPU_LAMBDA (uint64 Index)
 	{
-		checkf(Min <= Value, "%" PRIi64 " <= %" PRIi64, int64(Min), int64(Value));
-		checkf(Value <= Max, "%" PRIi64 " <= %" PRIi64, int64(Value), int64(Max));
+		checkf(ArrayA[Index] == ArrayB[Index], "%" PRIu64 " == %" PRIu64 " (Index %" PRIu64 ")", uint64(ArrayA[Index]), uint64(ArrayB[Index]), Index);
 	};
-	thrust::for_each(ExecutionPolicy, Array.GetData(), Array.GetData() + Array.Num(), Check);
-	CUDA_CHECK_ERROR();
+	if (MemoryType == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
+	{
+		const auto It = thrust::make_counting_iterator<uint64>(0);
+		thrust::for_each(ExecutionPolicy, It, It + ArrayA.Num(), Check);
+		CUDA_CHECK_ERROR();
+	}
+	else
+	{
+		for (uint64 Index = 0; Index < ArrayA.Num(); Index++)
+		{
+			Check(Index);
+		}
+	}
 #endif
 }
 
-template<typename TIn, typename TOut, typename F>
-inline void CheckFunctionBounds(
-	F Function, 
-	TIn MinInput, 
-	TIn MaxInput,
-	TOut MinOutput, 
-	TOut MaxOutput)
+template<typename T, EMemoryType MemoryType>
+inline void CheckIsSorted(const TStaticArray<T, MemoryType>& Array)
 {
+	(void)Array;
 #if ENABLE_CHECKS
-	const auto Check = [=] GPU_LAMBDA (TIn Value)
+	const auto Check = [=] GPU_LAMBDA (uint64 Index)
 	{
-		const TOut Output = Function(Value);
-		checkf(MinOutput <= Output, "%" PRIi64 " <= %" PRIi64, int64(MinOutput), int64(Output));
-		checkf(Output <= MaxOutput, "%" PRIi64 " <= %" PRIi64, int64(Output), int64(MaxOutput));
+		checkf(Array[Index] <= Array[Index + 1], "%" PRIu64 " <= %" PRIu64 " (Index %" PRIu64 ")", uint64(Array[Index]), uint64(Array[Index + 1]), Index);
 	};
-	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
-	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Check);
-	CUDA_CHECK_ERROR();
+	if (MemoryType == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
+	{
+		const auto It = thrust::make_counting_iterator<uint64>(0);
+		thrust::for_each(ExecutionPolicy, It, It + Array.Num() - 1, Check);
+		CUDA_CHECK_ERROR();
+	}
+	else
+	{
+		for (uint64 Index = 0; Index < Array.Num() - 1; Index++)
+		{
+			Check(Index);
+		}
+	}
 #endif
 }
 
@@ -79,6 +96,11 @@ inline void CheckFunctionBoundsIf(
 	TOut MinOutput, 
 	TOut MaxOutput)
 {
+	(void)Function;
+	(void)Condition;
+	(void)MinInput;
+	(void)MaxInput;
+	(void)MaxOutput;
 #if ENABLE_CHECKS
 	const auto Check = [=] GPU_LAMBDA (TIn Value)
 	{
@@ -91,6 +113,154 @@ inline void CheckFunctionBoundsIf(
 	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Check);
 	CUDA_CHECK_ERROR();
 #endif
+}
+
+template<typename TIn, typename TOut, typename F>
+inline void CheckFunctionBounds(
+	F Function, 
+	TIn MinInput, 
+	TIn MaxInput,
+	TOut MinOutput, 
+	TOut MaxOutput)
+{
+	CheckFunctionBoundsIf(Function, [] GPU_LAMBDA (TIn) { return true; }, MinInput, MaxInput, MinOutput, MaxOutput);
+}
+
+template<typename T>
+inline void CheckArrayBounds(const TStaticArray<T, EMemoryType::GPU>& Array, T Min, T Max)
+{
+	CheckFunctionBounds<uint64, T>([=] GPU_LAMBDA (uint64 Index) { return Array[Index]; }, 0, Array.Num() - 1, Min, Max);
+}
+
+template<typename TDataPred, typename TIn, typename F, typename FCondition>
+inline void CheckFunctionIsInjectiveIf(
+	TDataPred Data, 
+	F Function,
+	FCondition Condition,
+	TIn MinInput, 
+	TIn MaxInput,
+	uint64 NumOutputs)
+{
+	(void)Data;
+	(void)Function;
+	(void)Condition;
+	(void)MinInput;
+	(void)MaxInput;
+	(void)NumOutputs;
+#if ENABLE_CHECKS
+#if 0 // Strict injectivity is probably not needed: we just need to write the same values
+	auto Counters = TStaticArray<uint64, EMemoryType::GPU>("Counters", NumOutputs);
+	Counters.MemSet(0);
+	
+	const auto Add = [=] GPU_ONLY_LAMBDA (TIn Value)
+	{
+		if (!Condition(Value)) return;
+		const uint64 Output = Function(Value);
+		atomicAdd(const_cast<uint64*>(&Counters[Output]), uint64(1));
+	};
+	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
+	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Add);
+	CheckArrayBounds(Counters, uint64(0), uint64(1));
+	CUDA_CHECK_ERROR();
+
+	Counters.Free();
+#else
+	using TData = typename std::remove_reference<decltype(Data({}))>::type;
+	auto DataTestArray = TStaticArray<TData, EMemoryType::GPU>("DataTest", NumOutputs);
+	auto PreviousIndicesArray = TStaticArray<uint64, EMemoryType::GPU>("PreviousIndicesArray", NumOutputs);
+	DataTestArray.MemSet(0);
+	PreviousIndicesArray.MemSet(0xFF);
+
+#if !DEBUG_GPU_ARRAYS
+	const auto Check = [=] GPU_ONLY_LAMBDA (TIn Input)
+	{
+		if (!Condition(Input)) return;
+		const uint64 Output = Function(Input);
+		checkInf(Output, NumOutputs);
+		const auto DataValue = Data(Input);
+		auto& DataTest = const_cast<TData&>(DataTestArray[Output]);
+		
+		const uint32* RESTRICT const DataValueWords = reinterpret_cast<const uint32*>(&DataValue);
+		uint32* RESTRICT const DataTestWords = reinterpret_cast<uint32*>(&DataTest);
+		
+		static_assert(sizeof(Data) % 4 == 0, "");
+		for (int32 WordIndex = 0; WordIndex < sizeof(TData) / 4; WordIndex++)
+		{
+			const uint32 ExistingWord = atomicExch(&DataTestWords[WordIndex], DataValueWords[WordIndex]);
+			const uint64 PreviousIndex = atomicExch(const_cast<uint64*>(&PreviousIndicesArray[Output]), uint64(Input));
+			if (ExistingWord == 0) continue;
+			if (ExistingWord == DataValueWords[WordIndex]) continue;
+			printf("Different words: existing 0x%08x, writing 0x%08x. Index: %9" PRIu64 ". Mapping: %9" PRIu64 ". Word Index: %4u. Previous Write Index: %" PRIu64 "\n",
+				ExistingWord,
+				DataValueWords[WordIndex],
+				uint64(Input),
+				Output,
+				WordIndex,
+				PreviousIndex);
+			DEBUG_BREAK();
+		}
+	};
+
+	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
+	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Check);
+	CUDA_CHECK_ERROR();
+#else
+	for (TIn Input = MinInput; Input <= MaxInput; Input++)
+	{
+		if (!Condition(Input)) continue;
+		const uint64 Output = Function(Input);
+		checkInf(Output, NumOutputs);
+		const auto DataValue = Data(Input);
+		auto& DataTest = const_cast<TData&>(DataTestArray[Output]);
+
+		const uint32* RESTRICT const DataValueWords = reinterpret_cast<const uint32*>(&DataValue);
+		uint32* RESTRICT const DataTestWords = reinterpret_cast<uint32*>(&DataTest);
+
+		static_assert(sizeof(Data) % 4 == 0, "");
+		for (int32 WordIndex = 0; WordIndex < sizeof(TData) / 4; WordIndex++)
+		{
+			const uint32 ExistingWord = DataTestWords[WordIndex];
+			DataTestWords[WordIndex] = DataValueWords[WordIndex];
+			const uint64 PreviousIndex = PreviousIndicesArray[Output];
+			PreviousIndicesArray[Output] = uint64(Input);
+			if (ExistingWord == 0) continue;
+			if (ExistingWord == DataValueWords[WordIndex]) continue;
+			printf("Different words: existing 0x%08x, writing 0x%08x. Index: %9" PRIu64 ". Mapping: %9" PRIu64 ". Word Index: %4u. Previous Write Index: %" PRIu64 "\n",
+				ExistingWord,
+				DataValueWords[WordIndex],
+				uint64(Input),
+				Output,
+				WordIndex,
+				PreviousIndex);
+			DEBUG_BREAK();
+		}
+	}
+#endif
+
+	DataTestArray.Free();
+	PreviousIndicesArray.Free();
+#endif
+#endif
+}
+
+template<typename TData, typename TIn, typename F>
+inline void CheckFunctionIsInjective(
+	TData Data, 
+	F Function, 
+	TIn MinInput, 
+	TIn MaxInput,
+	uint64 NumOutputs)
+{
+	CheckFunctionIsInjectiveIf(Data, Function, [] GPU_LAMBDA (TIn) { return true; }, MinInput, MaxInput, NumOutputs);
+}
+
+template<typename TData, typename TB>
+inline void CheckArrayIsInjective(
+	TData Data, 
+	const TStaticArray<TB, EMemoryType::GPU>& Array, 
+	uint64 NumOutputs)
+{
+	CheckFunctionIsInjective(Data, Array, uint64(0), Array.Num() - 1, NumOutputs);
 }
 
 namespace cub
@@ -197,7 +367,8 @@ inline void ScatterPred(
 	MapFunction Map,
 	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
 {
-	CheckFunctionBounds<uint64, uint64>(Map, 0, In.Num() - 1, 0, Out.Num() - 1);
+	CheckFunctionBounds(Map, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
+	CheckFunctionIsInjective(In, Map, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	thrust::scatter(
@@ -216,7 +387,8 @@ inline void Scatter(
 	const TStaticArray<IndexType, EMemoryType::GPU>& Map,
 	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
 {
-	CheckArrayBounds<IndexType>(Map, 0, IndexType(Out.Num()) - 1);
+	CheckArrayBounds(Map, IndexType(0), IndexType(Out.Num() - 1));
+	CheckArrayIsInjective(In, Map, Out.Num());
 	
 	thrust::scatter(
 		ExecutionPolicy,
@@ -237,6 +409,9 @@ inline void ScatterWithTransform(
 	CheckArrayBounds<IndexType>(Map, 0, IndexType(Out.Num()) - 1);
 	
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
+	
+	CheckArrayIsInjective([=] GPU_LAMBDA (uint64 Index) { return It[Index]; }, Map, Out.Num());
+	
 	thrust::scatter(
 		ExecutionPolicy,
 		It,
@@ -254,7 +429,8 @@ inline void ScatterIf(
 	TStaticArray<TypeOut, EMemoryType::GPU>& Out,
 	F Condition)
 {
-	CheckFunctionBoundsIf<uint64, uint64>(Map, Condition, 0, In.Num() - 1, 0, Out.Num() - 1);
+	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
+	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	thrust::scatter_if(
@@ -276,7 +452,8 @@ inline void ScatterIfWithTransform(
 	TStaticArray<TypeOut, EMemoryType::GPU>& Out,
 	F Condition)
 {
-	CheckFunctionBoundsIf<uint64, uint64>(Map, Condition, 0, In.Num() - 1, 0, Out.Num() - 1);
+	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
+	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);

@@ -4,9 +4,11 @@
 #include "Utils.h"
 #include "Memory.h"
 
-template<typename TElementType, EMemoryType MemoryType, typename TSize = uint64>
+template<typename ElementType, EMemoryType MemoryType, typename TSize = uint64>
 struct TStaticArray
 {
+	using TElementType = ElementType;
+	
 	TStaticArray() = default;
 	HOST_DEVICE TStaticArray(TElementType* RESTRICT Data, TSize Size)
 		: ArrayData(Data)
@@ -17,6 +19,9 @@ struct TStaticArray
 		: ArrayData(FMemory::Malloc<TElementType>(Name, Size * sizeof(TElementType), MemoryType))
 		, ArraySize(Size)
 	{
+#if ENABLE_CHECKS
+		MemSet(0xFF);
+#endif
 	}
 	TStaticArray(const char* Name, std::initializer_list<TElementType> List)
 		: TStaticArray(Name, List.size())
@@ -103,7 +108,7 @@ struct TStaticArray
 		static_assert(MemoryType == EMemoryType::GPU, "");
         check(CpuArray.Num() == Num());
         CUDA_CHECKED_CALL cudaMemcpyAsync(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
-		CUDA_CHECKED_CALL cudaStreamSynchronize(0);
+		CUDA_SYNCHRONIZE_STREAM();
 	}
 
 	HOST void MemSet(uint8 Value)
@@ -113,6 +118,7 @@ struct TStaticArray
 		if (MemoryType == EMemoryType::GPU)
 		{
 			CUDA_CHECKED_CALL cudaMemset(GetData(), Value, SizeInBytes());
+			CUDA_SYNCHRONIZE_STREAM();
 		}
 		else
 		{
@@ -144,6 +150,11 @@ struct TStaticArray
 	{
 		return ArrayData;
 	}
+
+	HOST_DEVICE static EMemoryType GetMemoryType()
+	{
+		return MemoryType;
+	}
 	
 	HOST_DEVICE bool IsValid() const
 	{
@@ -174,6 +185,16 @@ struct TStaticArray
 		checkf(Index < ArraySize, "invalid index: %" PRIu64 " for size %" PRIu64, Index, ArraySize);
 		return ArrayData[Index];
 	}
+
+	HOST_DEVICE TElementType& operator()(TSize Index)
+	{
+		return (*this)[Index];
+	}
+	HOST_DEVICE const TElementType& operator()(TSize Index) const
+	{
+		return (*this)[Index];
+	}
+	
 	HOST_DEVICE bool operator==(const TStaticArray& Other) const
 	{
 		return Other.ArrayData == ArrayData && Other.ArraySize == ArraySize;

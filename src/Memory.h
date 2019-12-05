@@ -132,7 +132,7 @@ private:
 	FAlloc GetAllocInfoImpl(void* Ptr) const;
     std::string GetStatsStringImpl() const;
 
-    std::mutex Mutex;
+    mutable std::mutex Mutex;
     size_t TotalAllocatedGpuMemory = 0;
     size_t TotalAllocatedCpuMemory = 0;
     size_t MaxTotalAllocatedGpuMemory = 0;

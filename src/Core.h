@@ -1,12 +1,14 @@
 #pragma once
 
+#define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
+
 #define ENABLE_CHECKS 1
-#define DEBUG_GPU_ARRAYS 0
+#define DEBUG_GPU_ARRAYS 1
 
 #define LEVELS 12
-#define TOP_LEVEL (LEVELS - 8)
-#define SUBDAG_LEVELS 12
-#define FRAGMENTS_MEMORY_IN_MILLIONS 160
+#define TOP_LEVEL MAX(LEVELS - 8, 0)
+#define SUBDAG_LEVELS 10
+#define FRAGMENTS_MEMORY_IN_MILLIONS 50
 
 #define NUM_MERGE_THREADS 0
 #define PRINT_DEBUG_INFO 0
@@ -164,6 +166,7 @@ using uint64 = std::uint64_t;
 #define HOST_DEVICE_RECURSIVE __host__ __device__ inline
 
 #define GPU_LAMBDA __host__ __device__
+#define GPU_ONLY_LAMBDA __device__
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
