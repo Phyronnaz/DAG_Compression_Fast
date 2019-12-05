@@ -3,6 +3,9 @@
 #include "Core.h"
 #include "Array.h"
 
+class FAABB;
+struct FScene;
+
 struct FChildrenIndices
 {
 	uint32 Indices[8];
@@ -96,6 +99,8 @@ struct FFinalDag
 
 namespace DAGCompression
 {
+	FFinalDag Compress_SingleThreaded(const FScene& Scene, const FAABB& AABB);
+	
 	FCpuDag CreateSubDAG(TStaticArray<uint64, EMemoryType::GPU>& Fragments);
 	FCpuDag MergeDAGs(std::vector<FCpuDag>&& CpuDags);
 	FFinalDag CreateFinalDAG(FCpuDag&& CpuDag);
