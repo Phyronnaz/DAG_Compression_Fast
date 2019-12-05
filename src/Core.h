@@ -275,7 +275,7 @@ HOST_DEVICE T Cast(U Value)
 struct FNVExtScope
 {
 	template<typename... TArgs>
-	FNVExtScope(const char* Format, TArgs... Args)
+	FNVExtScope(uint32 Color, const char* Format, TArgs... Args)
 	{
 		const int32 Size = sprintf(String, Format, Args...);
 		checkInfEqual(Size, 1024);
@@ -283,7 +283,7 @@ struct FNVExtScope
 		eventAttrib.version = NVTX_VERSION;
 		eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
 		eventAttrib.colorType = NVTX_COLOR_ARGB;
-		eventAttrib.color = 0xFF0000;
+		eventAttrib.color = Color;
 		eventAttrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
 		eventAttrib.message.ascii = String;
 		nvtxRangePushEx(&eventAttrib);
@@ -300,7 +300,15 @@ struct FNVExtScope
 #define JOIN_IMPL(A, B) A ## B
 #define JOIN(A, B) JOIN_IMPL(A, B)
 
-#define PROFILE_SCOPE(Format, ...) FNVExtScope JOIN(ScopePerf, __LINE__)(Format, ##__VA_ARGS__);
+#define COLOR_RED 0xFF0000
+#define COLOR_GREEN 0x00FF00
+#define COLOR_BLUE 0x0000FF
+#define COLOR_YELLOW 0xFFFF00
+
+#define PROFILE_SCOPE_COLOR(Color, Format, ...) FNVExtScope JOIN(ScopePerf, __LINE__)(Color, Format, ##__VA_ARGS__);
+#define PROFILE_FUNCTION_COLOR(Color) PROFILE_SCOPE_COLOR(Color, __FUNCTION__);
+
+#define PROFILE_SCOPE(Format, ...) PROFILE_SCOPE_COLOR(COLOR_RED, Format, ##__VA_ARGS__);
 #define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__);
 
 #define MARK(Name) nvtxMarkA(Name)

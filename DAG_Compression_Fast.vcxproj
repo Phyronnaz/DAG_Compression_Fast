@@ -372,6 +372,7 @@
     <ClInclude Include="src\glm\vector_relational.hpp" />
     <ClInclude Include="src\GLTFLoader.h" />
     <ClInclude Include="src\GpuPrimitives.h" />
+    <ClInclude Include="src\Engine.h" />
     <ClInclude Include="src\Memory.h" />
     <ClInclude Include="src\moderngpu\context.hxx" />
     <ClInclude Include="src\moderngpu\cpp11.hxx" />
@@ -432,6 +433,7 @@
     <ClInclude Include="src\stb\stb_truetype.h" />
     <ClInclude Include="src\stb\stb_voxel_render.h" />
     <ClInclude Include="src\stb\stretchy_buffer.h" />
+    <ClInclude Include="src\Thread.h" />
     <ClInclude Include="src\Threadpool.h" />
     <ClInclude Include="src\tracy\Tracy.hpp" />
     <ClInclude Include="src\Utils.h" />
