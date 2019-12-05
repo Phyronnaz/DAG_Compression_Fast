@@ -9,6 +9,13 @@ struct FChildrenIndices
 };
 static_assert(sizeof(FChildrenIndices) == 8 * sizeof(uint32), "");
 
+HOST_DEVICE uint64 HashChildrenHashes(uint64 ChildrenHashes[8])
+{
+	const uint64 Hash = Utils::MurmurHash128xN(reinterpret_cast<const uint128*>(ChildrenHashes), 4).Data[0];
+	check(Hash != 0); // Can remove this check, just want to see if it actually happens
+	return Hash == 0 ? 1 : Hash;
+}
+
 struct FCpuLevel
 {
 	TStaticArray<uint8, EMemoryType::CPU> ChildMasks;
@@ -101,4 +108,12 @@ namespace DAGCompression
 	void SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryType::GPU>& OutHashesToSortedUniqueHashes);
 	FGpuLevel ExtractLevelAndShiftReduceFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments, const TStaticArray<uint32, EMemoryType::GPU>& FragmentIndicesToChildrenIndices);
 	void ComputeHashes(FGpuLevel& Level, const TStaticArray<uint64, EMemoryType::GPU>& LowerLevelHashes);
+
+	FCpuDag MergeDAGs(FCpuDag A, FCpuDag B);
+	
+	template<typename T>
+	void CheckLevelIndices(const T& Level);
+	void CheckDag(const FFinalDag& FinalDag);
+	// Returns total num leaves
+	uint64 CheckDag(const TStaticArray<uint32, EMemoryType::CPU>& Dag, const TStaticArray<uint64, EMemoryType::CPU>& EnclosedLeaves);
 }

@@ -3,7 +3,7 @@
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
 #define ENABLE_CHECKS 1
-#define DEBUG_GPU_ARRAYS 1
+#define DEBUG_GPU_ARRAYS 0
 
 #define LEVELS 12
 #define TOP_LEVEL MAX(LEVELS - 8, 0)

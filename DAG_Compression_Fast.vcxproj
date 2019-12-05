@@ -26,7 +26,10 @@
     <ClCompile Include="src\tracy\TracyClient.cpp" />
     <ClCompile Include="src\Utils\glm_extensions.cpp" />
     <ClCompile Include="src\Voxelizer.cpp" />
-    <CudaCompile Include="src\DAGCompression.cu" />
+    <CudaCompile Include="src\DAGCompression\CreateFinalDAG.cu" />
+    <CudaCompile Include="src\DAGCompression\CreateSubDAG.cu" />
+    <CudaCompile Include="src\DAGCompression\CheckDAG.cu" />
+    <CudaCompile Include="src\DAGCompression\MergeDAG.cu" />
     <CudaCompile Include="src\DAGTracer.cu" />
     <ClCompile Include="src\DAG_Compression_Fast.cpp">
       <FileType>Document</FileType>
@@ -125,7 +128,7 @@
     <ClInclude Include="src\CudaGLBuffer.h" />
     <ClInclude Include="src\CudaMath.h" />
     <ClInclude Include="src\CudaPerfRecorder.h" />
-    <ClInclude Include="src\DAGCompression.h" />
+    <ClInclude Include="src\DAGCompression\DAGCompression.h" />
     <ClInclude Include="src\DAGTracer.h" />
     <ClInclude Include="src\glm\common.hpp" />
     <ClInclude Include="src\glm\detail\compute_common.hpp" />

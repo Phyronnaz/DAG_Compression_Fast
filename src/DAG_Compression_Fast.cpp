@@ -8,8 +8,8 @@
 #include "GLTFLoader.h"
 #include "DAGTracer.h"
 #include "Voxelizer.h"
-#include "DAGCompression.h"
 #include "Serializer.h"
+#include "DAGCompression/DAGCompression.h"
 
 SDL_Window* MainWindow = nullptr;
 SDL_GLContext MainContext;

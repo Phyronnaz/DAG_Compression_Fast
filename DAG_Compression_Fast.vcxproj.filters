@@ -949,9 +949,6 @@
     <ClInclude Include="src\CudaGLBuffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\DAGCompression.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="src\Serializer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1076,6 +1073,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\cnmem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DAGCompression\DAGCompression.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -1477,7 +1477,10 @@
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="src\DAGTracer.cu" />
-    <CudaCompile Include="src\DAGCompression.cu" />
+    <CudaCompile Include="src\DAGCompression\CreateSubDAG.cu" />
+    <CudaCompile Include="src\DAGCompression\CreateFinalDAG.cu" />
+    <CudaCompile Include="src\DAGCompression\MergeDAG.cu" />
+    <CudaCompile Include="src\DAGCompression\CheckDAG.cu" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="src\Array.natvis" />
