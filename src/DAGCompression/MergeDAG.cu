@@ -3,10 +3,10 @@
 #include "Threadpool.h"
 
 inline uint32 Merge(
-	const TStaticArray<uint64, EMemoryType::GPU>& KeysA,
-	const TStaticArray<uint64, EMemoryType::GPU>& KeysB,
-	TStaticArray<uint32, EMemoryType::GPU>& OutIndicesAToMergedIndices,
-	TStaticArray<uint32, EMemoryType::GPU>& OutIndicesBToMergedIndices)
+	const TGpuArray<uint64>& KeysA,
+	const TGpuArray<uint64>& KeysB,
+	TGpuArray<uint32>& OutIndicesAToMergedIndices,
+	TGpuArray<uint32>& OutIndicesBToMergedIndices)
 {
 	PROFILE_FUNCTION();
 
@@ -17,8 +17,8 @@ inline uint32 Merge(
 	CheckIsSorted(KeysB);
 
 	const int32 NumToMerge = Cast<int32>(KeysA.Num() + KeysB.Num());
-	auto KeysAB = TStaticArray<uint64, EMemoryType::GPU>("KeysAB", NumToMerge);
-	auto Permutation = TStaticArray<uint32, EMemoryType::GPU>("Permutation", NumToMerge);
+	auto KeysAB = TGpuArray<uint64>("KeysAB", NumToMerge);
+	auto Permutation = TGpuArray<uint32>("Permutation", NumToMerge);
 	MergePairs(
 		KeysA,
 		thrust::make_counting_iterator<uint32>(0u),
@@ -29,9 +29,9 @@ inline uint32 Merge(
 		thrust::less<uint64>());
 	CheckIsSorted(KeysAB);
 
-	auto UniqueSum = TStaticArray<uint32, EMemoryType::GPU>("UniqueSum", NumToMerge);
+	auto UniqueSum = TGpuArray<uint32>("UniqueSum", NumToMerge);
 	{
-		auto UniqueFlags = TStaticArray<uint32, EMemoryType::GPU>("UniqueFlags", NumToMerge);
+		auto UniqueFlags = TGpuArray<uint32>("UniqueFlags", NumToMerge);
 		AdjacentDifference(KeysAB, UniqueFlags, thrust::not_equal_to<uint64>(), 0u);
 		{
 			void* TempStorage = nullptr;
@@ -48,8 +48,8 @@ inline uint32 Merge(
 
 	const uint32 NumUniques = GetElement(UniqueSum, UniqueSum.Num() - 1) + 1;
 
-	OutIndicesAToMergedIndices = TStaticArray<uint32, EMemoryType::GPU>("IndicesAToMergedIndices", KeysA.Num());
-	OutIndicesBToMergedIndices = TStaticArray<uint32, EMemoryType::GPU>("IndicesBToMergedIndices", KeysB.Num());
+	OutIndicesAToMergedIndices = TGpuArray<uint32>("IndicesAToMergedIndices", KeysA.Num());
+	OutIndicesBToMergedIndices = TGpuArray<uint32>("IndicesBToMergedIndices", KeysB.Num());
 
 	ScatterIf(
 		UniqueSum, 
@@ -96,8 +96,8 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 	FCpuDag MergedCpuDag;
 	MergedCpuDag.Levels.resize(NumLevels);
 
-	TStaticArray<uint32, EMemoryType::GPU> IndicesAToMergedIndices;
-	TStaticArray<uint32, EMemoryType::GPU> IndicesBToMergedIndices;
+	TGpuArray<uint32> IndicesAToMergedIndices;
+	TGpuArray<uint32> IndicesBToMergedIndices;
 	{
 		auto LeavesA = A.Leaves.CreateGPU();
 		auto LeavesB = B.Leaves.CreateGPU();
@@ -110,7 +110,7 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 			IndicesAToMergedIndices,
 			IndicesBToMergedIndices);
 
-		auto MergedLeaves = TStaticArray<uint64, EMemoryType::GPU>("MergedLeaves", NumMergedLeaves);
+		auto MergedLeaves = TGpuArray<uint64>("MergedLeaves", NumMergedLeaves);
 		Scatter(LeavesA, IndicesAToMergedIndices, MergedLeaves);
 		Scatter(LeavesB, IndicesBToMergedIndices, MergedLeaves);
 
@@ -145,7 +145,7 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 		FCpuLevel MergedLevel;
 
 		{
-			auto MergedHashes = TStaticArray<uint64, EMemoryType::GPU>("MergedHashes", NumMerged);
+			auto MergedHashes = TGpuArray<uint64>("MergedHashes", NumMerged);
 
 			Scatter(HashesA, IndicesAToMergedIndices, MergedHashes);
 			Scatter(HashesB, IndicesBToMergedIndices, MergedHashes);
@@ -158,7 +158,7 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 		}
 
 		{
-			auto MergedChildMasks = TStaticArray<uint8, EMemoryType::GPU>("MergedChildMasks", NumMerged);
+			auto MergedChildMasks = TGpuArray<uint8>("MergedChildMasks", NumMerged);
 			
 			auto ChildMasksA = LevelA.ChildMasks.CreateGPU();
 			auto ChildMasksB = LevelB.ChildMasks.CreateGPU();
@@ -176,7 +176,7 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 		}
 
 		{
-			const auto Transform = [] GPU_LAMBDA(const TStaticArray<uint32, EMemoryType::GPU>& IndicesMap, FChildrenIndices Indices)
+			const auto Transform = [] GPU_LAMBDA(const TGpuArray<uint32>& IndicesMap, FChildrenIndices Indices)
 			{
 				for (uint32& Index : Indices.Indices)
 				{
@@ -190,7 +190,7 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 			const auto TransformA = [=] GPU_LAMBDA(FChildrenIndices Indices) { return Transform(PreviousIndicesAToMergedIndices, Indices); };
 			const auto TransformB = [=] GPU_LAMBDA(FChildrenIndices Indices) { return Transform(PreviousIndicesBToMergedIndices, Indices); };
 
-			auto MergedChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::GPU>("MergedChildrenIndices", NumMerged);
+			auto MergedChildrenIndices = TGpuArray<FChildrenIndices>("MergedChildrenIndices", NumMerged);
 
 			auto ChildrenIndicesA = LevelA.ChildrenIndices.CreateGPU();
 			auto ChildrenIndicesB = LevelB.ChildrenIndices.CreateGPU();
@@ -225,8 +225,43 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 	return MergedCpuDag;
 }
 
+std::thread DAGCompression::MergeColors(std::vector<TCpuArray<uint32>> Colors, TCpuArray<uint32>& MergedColors)
+{
+	return std::thread([Colors, &MergedColors]()
+	{
+		NAME_THREAD("Merge Color Thread");
+		PROFILE_SCOPE("Merge Colors");
+		uint64 Num = 0;
+		std::vector<uint64> Offsets;
+		for (auto& SubDagColors : Colors)
+		{
+			Offsets.push_back(Num);
+			Num += SubDagColors.Num();
+		}
+		if (Num == 0) return;
+
+		MergedColors = TCpuArray<uint32>("Colors", Num);
+
+		FThreadPool ThreadPool(NUM_MERGE_COLORS_THREADS, "Merge Colors Thread Pool");
+		for (uint32 Index = 0; Index < Colors.size(); Index++)
+		{
+			if (Colors[Index].Num() > 0) // Else we might memcpy an invalid ptr
+			{
+				const auto Task = [Index, &MergedColors, &Offsets, &Colors]()
+				{
+					std::memcpy(&MergedColors[Offsets[Index]], Colors[Index].GetData(), Colors[Index].SizeInBytes());
+					const_cast<TCpuArray<uint32>&>(Colors[Index]).Free();
+				};
+				ThreadPool.Enqueue(Task);
+			}
+		}
+		ThreadPool.WaitForCompletion();
+		ThreadPool.Destroy();
+	});
+}
+
 // Note: dags are split in morton order
-FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
+FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag> CpuDags)
 {
 	PROFILE_FUNCTION();
 	
@@ -238,50 +273,18 @@ FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 	}
 
 #if ENABLE_COLORS
-	TStaticArray<uint32, EMemoryType::CPU> MergedColors;
-	std::vector<TStaticArray<uint32, EMemoryType::CPU>> ColorsToMerge;
+	TCpuArray<uint32> MergedColors;
+	std::vector<TCpuArray<uint32>> ColorsToMerge;
 	ColorsToMerge.reserve(CpuDags.size());
 	for (auto& Dag : CpuDags)
 	{
 		ColorsToMerge.push_back(Dag.Colors);
 		Dag.Colors.Reset();
 	}
-	std::thread MergeColorThread([&ColorsToMerge, &MergedColors]()
-	{
-		NAME_THREAD("MergeColorThread");
-		PROFILE_SCOPE("Merge Colors");
-		uint64 Num = 0;
-		std::vector<uint64> Offsets;
-		for(auto& Colors : ColorsToMerge)
-		{
-			Offsets.push_back(Num);
-			Num += Colors.Num();
-		}
-		MergedColors = TStaticArray<uint32, EMemoryType::CPU>("Colors", Num);
-
-		std::vector<std::thread> Threads;
-		for (uint32 Index = 0; Index < ColorsToMerge.size(); Index++)
-		{
-			if (ColorsToMerge[Index].Num() > 0) // Else we might memcpy an invalid ptr
-			{
-				Threads.emplace_back([Index, &ColorsToMerge, &Offsets, &MergedColors]()
-					{
-						NAME_THREAD("MergeColorThreadPool");
-						std::memcpy(&MergedColors[Offsets[Index]], ColorsToMerge[Index].GetData(), ColorsToMerge[Index].SizeInBytes());
-						ColorsToMerge[Index].Free();
-					});
-				Threads.back().join(); // TODO HACK
-			}
-		}
-		for(auto& Thread : Threads)
-		{
-			//Thread.join(); TODO
-		}
-	});
-	MergeColorThread.join(); // TODO HACK
+	std::thread MergeColorThread = MergeColors(std::move(ColorsToMerge), MergedColors);
 #endif
 
-	FThreadPool ThreadPool(NUM_MERGE_THREADS);
+	FThreadPool ThreadPool(NUM_MERGE_THREADS, "Merge Thread Pool");
 
 	int32 PassIndex = 0;
 	while (CpuDags.size() > 1)
@@ -352,12 +355,11 @@ FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 				FCpuLevel TopLevel;
 				if (ChildMask != 0)
 				{
-					TopLevel.ChildMasks = TStaticArray<uint8, EMemoryType::CPU>("ChildMasks", { ChildMask });
-					TopLevel.ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::CPU>("ChildrenIndices", { ChildrenIndices });
-					TopLevel.Hashes = TStaticArray<uint64, EMemoryType::CPU>("Hashes", { Hash });
+					TopLevel.ChildMasks = TCpuArray<uint8>("ChildMasks", { ChildMask });
+					TopLevel.ChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", { ChildrenIndices });
+					TopLevel.Hashes = TCpuArray<uint64>("Hashes", { Hash });
 				}
 				CheckLevelIndices(TopLevel);
-				CheckIsSorted(TopLevel.Hashes);
 				
 				MergedDag.Levels.insert(MergedDag.Levels.begin(), TopLevel);
 
@@ -376,7 +378,7 @@ FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag>&& CpuDags)
 #if ENABLE_COLORS
 	{
 		PROFILE_SCOPE("Wait For Merge Colors Thread");
-		//MergeColorThread.join(); TODO
+		MergeColorThread.join();
 		CpuDags[0].Colors = MergedColors;
 	}
 #endif

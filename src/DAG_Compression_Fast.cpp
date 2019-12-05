@@ -7,6 +7,9 @@
 
 int main()
 {
+	FEngine Engine;
+	Engine.Init();
+	
 	struct FScopedCNMEM
 	{
 		FScopedCNMEM()
@@ -30,11 +33,10 @@ int main()
 	};
 	FScopedCNMEM CNMEM;
 
-	FEngine Engine;
-	Engine.Init(); // Need to be initialized to generate the fragments
-
 	FAABB AABB;
 	FFinalDag Dag;
+
+	NAME_THREAD("Main");
 
 #if 1
 	{
@@ -54,8 +56,14 @@ int main()
 		LOG("############################################################");
 		LOG("");
 
+		MARK("Compression Start");
+#if 0
 		Dag = DAGCompression::Compress_SingleThreaded(Scene, AABB);
-		
+#else
+		Dag = DAGCompression::Compress_MultiThreaded(Scene, AABB);
+#endif
+		MARK("Compression End");
+
 		std::cout << FMemory::GetStatsString();
 		
 		FreeScene(Scene);
@@ -81,7 +89,7 @@ int main()
 	Reader.Read(Levels);
 	check(Levels == LEVELS);
 
-	TStaticArray<uint32, EMemoryType::CPU> DagCpu;
+	TCpuArray<uint32> DagCpu;
 	Reader.Read(DagCpu, "DagCpu");
 
 	Dag = DagCpu.CreateGPU();

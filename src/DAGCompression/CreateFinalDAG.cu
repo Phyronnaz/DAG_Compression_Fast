@@ -2,12 +2,12 @@
 #include "GpuPrimitives.h"
 
 // Returns NumWords
-uint32 ComputeChildPositions(const FGpuLevel& Level, TStaticArray<uint32, EMemoryType::GPU>& ChildPositions)
+uint32 ComputeChildPositions(const FGpuLevel& Level, TGpuArray<uint32>& ChildPositions)
 {
 	const int32 Num = Cast<int32>(Level.ChildMasks.Num());
 	check(Num > 0);
 
-	ChildPositions = TStaticArray<uint32, EMemoryType::GPU>("ChildPositions", Num);
+	ChildPositions = TGpuArray<uint32>("ChildPositions", Num);
 
 	const auto NodeSizes = thrust::make_transform_iterator(Level.ChildMasks.GetData(),  [] GPU_LAMBDA (uint8 ChildMask) { return Utils::TotalSize(ChildMask); });
 
@@ -25,7 +25,7 @@ uint32 ComputeChildPositions(const FGpuLevel& Level, TStaticArray<uint32, EMemor
 }
 
 template<typename T>
-void WriteLevelTo(const FGpuLevel& Level, const TStaticArray<uint32, EMemoryType::GPU>& ChildPositions, TStaticArray<uint32, EMemoryType::GPU>& Data, T GetChildIndex)
+void WriteLevelTo(const FGpuLevel& Level, const TGpuArray<uint32>& ChildPositions, TGpuArray<uint32>& Data, T GetChildIndex)
 {
 	DAGCompression::CheckLevelIndices(Level);
 	
@@ -54,8 +54,8 @@ void WriteLevelTo(const FGpuLevel& Level, const TStaticArray<uint32, EMemoryType
 
 template<uint32 Level>
 HOST_DEVICE_RECURSIVE uint64 SetLeavesCounts(
-	TStaticArray<uint64, EMemoryType::GPU> Counts,
-	TStaticArray<uint32, EMemoryType::GPU> Dag,
+	TGpuArray<uint64> Counts,
+	TGpuArray<uint32> Dag,
 	uint32 Index)
 {
 	// No need to be thread safe here, worst case we do the same computation twice
@@ -81,8 +81,8 @@ HOST_DEVICE_RECURSIVE uint64 SetLeavesCounts(
 
 template<>
 HOST_DEVICE_RECURSIVE uint64 SetLeavesCounts<LEVELS - 2>(
-	TStaticArray<uint64, EMemoryType::GPU> Counts,
-	TStaticArray<uint32, EMemoryType::GPU> Dag,
+	TGpuArray<uint64> Counts,
+	TGpuArray<uint32> Dag,
 	uint32 Index)
 {
 	(void)Counts;
@@ -90,9 +90,9 @@ HOST_DEVICE_RECURSIVE uint64 SetLeavesCounts<LEVELS - 2>(
 }
 
 __global__ void SetLeavesCountsKernel(
-	TStaticArray<uint32, EMemoryType::GPU> Indices,
-	TStaticArray<uint64, EMemoryType::GPU> Counts,
-	TStaticArray<uint32, EMemoryType::GPU> Dag)
+	TGpuArray<uint32> Indices,
+	TGpuArray<uint64> Counts,
+	TGpuArray<uint32> Dag)
 {
 	const uint32 Index = blockIdx.x * blockDim.x + threadIdx.x;
 	if (!Indices.IsValidIndex(Index)) return;
@@ -103,8 +103,8 @@ __global__ void SetLeavesCountsKernel(
 
 template<bool IsFirstPass>
 uint64 SetLeavesCountsCpuImpl(
-	TStaticArray<uint32, EMemoryType::CPU> Dag,
-	TStaticArray<uint64, EMemoryType::CPU> Counts,
+	TCpuArray<uint32> Dag,
+	TCpuArray<uint64> Counts,
 	std::vector<uint64>& OutEnclosedLeaves,
 	std::vector<uint32>& OutIndices,
 	uint32 Index,
@@ -158,11 +158,11 @@ void SetLeavesCountsCpu(FFinalDag& Dag)
 
 	auto GpuDag = Dag.Dag;
 	auto CpuDag = GpuDag.CreateCPU();
-	TStaticArray<uint64, EMemoryType::CPU> CpuCounts("Counts", CpuDag.Num());
+	TCpuArray<uint64> CpuCounts("Counts", CpuDag.Num());
 	CpuCounts.MemSet(0);
 	SetLeavesCountsCpuImpl<true>(CpuDag, CpuCounts, EnclosedLeaves, Indices, 0, 0);
 
-	TStaticArray<uint32, EMemoryType::GPU> GpuIndices("Indices", Indices.size());
+	TGpuArray<uint32> GpuIndices("Indices", Indices.size());
 	{
 		PROFILE_SCOPE("Memcpy");
 		CUDA_CHECKED_CALL cudaMemcpyAsync(GpuIndices.GetData(), &Indices[0], GpuIndices.SizeInBytes(), cudaMemcpyHostToDevice);
@@ -186,7 +186,7 @@ void SetLeavesCountsCpu(FFinalDag& Dag)
 
 	if (!EnclosedLeaves.empty())
 	{
-		Dag.EnclosedLeaves = TStaticArray<uint64, EMemoryType::GPU>("EnclosedLeaves", EnclosedLeaves.size());
+		Dag.EnclosedLeaves = TGpuArray<uint64>("EnclosedLeaves", EnclosedLeaves.size());
 		{
 			PROFILE_SCOPE("Memcpy");
 			CUDA_CHECKED_CALL cudaMemcpyAsync(Dag.EnclosedLeaves.GetData(), &EnclosedLeaves[0], Dag.EnclosedLeaves.SizeInBytes(), cudaMemcpyHostToDevice);
@@ -199,9 +199,11 @@ void SetLeavesCountsCpu(FFinalDag& Dag)
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-FFinalDag DAGCompression::CreateFinalDAG(FCpuDag&& CpuDag)
+FFinalDag DAGCompression::CreateFinalDAG(FCpuDag CpuDag)
 {
 	PROFILE_FUNCTION();
+
+	checkfAlways(CpuDag.Levels[0].Hashes.Num() > 0, "Empty Dag!");
 	
 	std::vector<FGpuLevel> Levels;
 	for (auto& Level : CpuDag.Levels)
@@ -216,7 +218,7 @@ FFinalDag DAGCompression::CreateFinalDAG(FCpuDag&& CpuDag)
 	struct FLevelInfo
 	{
 		uint32 NumWords;
-		TStaticArray<uint32, EMemoryType::GPU> ChildPositions;
+		TGpuArray<uint32> ChildPositions;
 	};
 
 	std::vector<FLevelInfo> LevelsInfo;
@@ -232,7 +234,7 @@ FFinalDag DAGCompression::CreateFinalDAG(FCpuDag&& CpuDag)
 	}
 	Num += Leaves.Num() * 2;
 
-	TStaticArray<uint32, EMemoryType::GPU> Dag("Dag", Num);
+	TGpuArray<uint32> Dag("Dag", Num);
 	Dag.MemSet(0xFF); // To spot errors
 	uint64 Offset = 0;
 	for (uint64 LevelIndex = 0; LevelIndex < Levels.size(); LevelIndex++)
@@ -241,7 +243,7 @@ FFinalDag DAGCompression::CreateFinalDAG(FCpuDag&& CpuDag)
 		const auto& LevelInfo = LevelsInfo[LevelIndex];
 		const uint32 NextLevelStart = Cast<uint32>(Offset + LevelInfo.NumWords);
 		checkInfEqual(Offset, Num);
-		auto DagWithOffset = TStaticArray<uint32, EMemoryType::GPU>(Dag.GetData() + Offset, Num - Offset);
+		auto DagWithOffset = TGpuArray<uint32>(Dag.GetData() + Offset, Num - Offset);
 		if (LevelIndex == Levels.size() - 1)
 		{
 			const auto GetChildIndex = [=] GPU_LAMBDA (uint32 Index) { return NextLevelStart + 2 * Index; };
@@ -276,7 +278,7 @@ FFinalDag DAGCompression::CreateFinalDAG(FCpuDag&& CpuDag)
 	SetLeavesCountsCpu(FinalDag);
 	{
 		PROFILE_SCOPE("Copy Colors");
-		FinalDag.Colors = TStaticArray<uint32, EMemoryType::GPU>("Colors", CpuDag.Colors.Num());
+		FinalDag.Colors = TGpuArray<uint32>("Colors", CpuDag.Colors.Num());
 		CpuDag.Colors.CopyToGPU(FinalDag.Colors);
 		CpuDag.Colors.Free();
 	}

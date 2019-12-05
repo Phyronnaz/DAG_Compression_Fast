@@ -1,12 +1,10 @@
 #pragma once
 
 #include "Core.h"
-#include <SDL.h>
-#undef main
 #include <GL/glew.h>
+#include <GLFW/glfw3.h>
 #include "glm/vec2.hpp"
 #include <string>
-#include <iostream>
 #include <chrono>
 
 #include "Utils/View.h"
@@ -30,7 +28,6 @@ public:
 		, EndTp(clock_t::now())
 		, DiffNs(0)
 	{
-		
 	}
 
 	float DeltaTime() const
@@ -57,59 +54,58 @@ public:
 struct FAppState
 {
 	FView Camera;
-	glm::ivec2 OldMouse{ 0, 0 };
-	glm::ivec2 NewMouse{ 0, 0 };
+	glm::dvec2 OldMouse{ 0, 0 };
+	glm::dvec2 NewMouse{ 0, 0 };
 	bool Loop = true;
 	FTimer FrameTimer;
 	uint32 DebugLevel = 0xFFFFFFFF;
 
-	void HandleEvents()
+	void HandleEvents(GLFWwindow* MainWindow)
 	{
+		glfwPollEvents();
+		
 		const float DeltaTime = FrameTimer.DeltaTime();
-		SDL_Event Event;
-		while (SDL_PollEvent(&Event))
+
+		const auto IsPressed = [&](auto Key)
 		{
-			if (Event.type == SDL_QUIT)
-			{
-				Loop = false;
-				break;
-			}
+			return glfwGetKey(MainWindow, Key) == GLFW_PRESS;
+		};
+
+		if (glfwWindowShouldClose(MainWindow))
+		{
+			Loop = false;
 		}
-
+		
 		const float MoveScaleFactor{ 1000.0f * DeltaTime };
-		const uint8* KeyState = SDL_GetKeyboardState(NULL);
-		if (KeyState[SDL_SCANCODE_ESCAPE]) { Loop = false; }
-		if (KeyState[SDL_SCANCODE_W]) { Camera.Position += MoveScaleFactor * Camera.Rotation[2]; }
-		if (KeyState[SDL_SCANCODE_S]) { Camera.Position -= MoveScaleFactor * Camera.Rotation[2]; }
-		if (KeyState[SDL_SCANCODE_D]) { Camera.Position += MoveScaleFactor * Camera.Rotation[0]; }
-		if (KeyState[SDL_SCANCODE_A]) { Camera.Position -= MoveScaleFactor * Camera.Rotation[0]; }
-		if (KeyState[SDL_SCANCODE_E]) { Camera.Position += MoveScaleFactor * Camera.Rotation[1]; }
-		if (KeyState[SDL_SCANCODE_Q]) { Camera.Position -= MoveScaleFactor * Camera.Rotation[1]; }
+		if (IsPressed(GLFW_KEY_ESCAPE)) { Loop = false; }
+		if (IsPressed(GLFW_KEY_W)) { Camera.Position += MoveScaleFactor * Camera.Rotation[2]; }
+		if (IsPressed(GLFW_KEY_S)) { Camera.Position -= MoveScaleFactor * Camera.Rotation[2]; }
+		if (IsPressed(GLFW_KEY_D)) { Camera.Position += MoveScaleFactor * Camera.Rotation[0]; }
+		if (IsPressed(GLFW_KEY_A)) { Camera.Position -= MoveScaleFactor * Camera.Rotation[0]; }
+		if (IsPressed(GLFW_KEY_E)) { Camera.Position += MoveScaleFactor * Camera.Rotation[1]; }
+		if (IsPressed(GLFW_KEY_Q)) { Camera.Position -= MoveScaleFactor * Camera.Rotation[1]; }
 
-		if (KeyState[SDL_SCANCODE_1]) { DebugLevel = 0; }
-		if (KeyState[SDL_SCANCODE_2]) { DebugLevel = 1; }
-		if (KeyState[SDL_SCANCODE_3]) { DebugLevel = 2; }
-		if (KeyState[SDL_SCANCODE_4]) { DebugLevel = 3; }
-		if (KeyState[SDL_SCANCODE_5]) { DebugLevel = 4; }
-		if (KeyState[SDL_SCANCODE_6]) { DebugLevel = 5; }
-		if (KeyState[SDL_SCANCODE_7]) { DebugLevel = 6; }
-		if (KeyState[SDL_SCANCODE_8]) { DebugLevel = 7; }
-		if (KeyState[SDL_SCANCODE_9]) { DebugLevel = 8; }
-		if (KeyState[SDL_SCANCODE_0]) { DebugLevel = 0xFFFFFFFF; }
-		if (KeyState[SDL_SCANCODE_L]) { DebugLevel = 0xFFFFFFFE; }
-		if (KeyState[SDL_SCANCODE_C]) { DebugLevel = 0xFFFFFFFD; }
-		if (KeyState[SDL_SCANCODE_N]) { DebugLevel = 0xFFFFFFFC; }
+		if (IsPressed(GLFW_KEY_1)) { DebugLevel = 0; }
+		if (IsPressed(GLFW_KEY_2)) { DebugLevel = 1; }
+		if (IsPressed(GLFW_KEY_3)) { DebugLevel = 2; }
+		if (IsPressed(GLFW_KEY_4)) { DebugLevel = 3; }
+		if (IsPressed(GLFW_KEY_5)) { DebugLevel = 4; }
+		if (IsPressed(GLFW_KEY_6)) { DebugLevel = 5; }
+		if (IsPressed(GLFW_KEY_7)) { DebugLevel = 6; }
+		if (IsPressed(GLFW_KEY_8)) { DebugLevel = 7; }
+		if (IsPressed(GLFW_KEY_9)) { DebugLevel = 8; }
+		if (IsPressed(GLFW_KEY_0)) { DebugLevel = 0xFFFFFFFF; }
+		if (IsPressed(GLFW_KEY_L)) { DebugLevel = 0xFFFFFFFE; }
+		if (IsPressed(GLFW_KEY_C)) { DebugLevel = 0xFFFFFFFD; }
+		if (IsPressed(GLFW_KEY_N)) { DebugLevel = 0xFFFFFFFC; }
 		
 
-		const uint32 MouseState = SDL_GetMouseState(&NewMouse.x, &NewMouse.y);
-		constexpr uint32 LeftMouseButton  { 1 << 0 };
-		constexpr uint32 MiddleMouseButton{ 1 << 1 };
-		constexpr uint32 RightMouseButton { 1 << 2 };
-		const bool LeftDown   = (LeftMouseButton   & MouseState) != 0;
-		const bool MiddleDown = (MiddleMouseButton & MouseState) != 0;
-		const bool RightDown  = (RightMouseButton  & MouseState) != 0;
+		glfwGetCursorPos(MainWindow, &NewMouse.x, &NewMouse.y);
+		const bool LeftDown   = IsPressed(GLFW_MOUSE_BUTTON_LEFT);
+		const bool MiddleDown = IsPressed(GLFW_MOUSE_BUTTON_RIGHT);
+		const bool RightDown  = IsPressed(GLFW_MOUSE_BUTTON_MIDDLE);
 
-		const auto DeltaMouse = NewMouse - OldMouse;
+		const glm::vec2 DeltaMouse = NewMouse - OldMouse;
 
 		const float MouseScaleFactor{ 0.25f * DeltaTime };
 		if (LeftDown && RightDown) 
@@ -125,7 +121,7 @@ struct FAppState
 		{
 			Camera.Roll(-DeltaMouse.x * MouseScaleFactor);
 		}
-		else if (MiddleDown) 
+		else if (MiddleDown)
 		{
 			Camera.Position -= DeltaMouse.y * MouseScaleFactor * Camera.Rotation[1];
 			Camera.Position += DeltaMouse.x * MouseScaleFactor * Camera.Rotation[0];
@@ -136,25 +132,24 @@ struct FAppState
 
 struct FEngine
 {
-	SDL_Window* MainWindow = nullptr;
-	SDL_GLContext MainContext;
+	GLFWwindow* MainWindow = nullptr;
 	glm::ivec2 ScreenDim{ 1024, 1024 };
 	GLuint CopyShader = 0;
 	GLint RenderBufferUniform = -1;
 
 	static GLuint CompileShader(GLenum shader_type, const std::string& src)
 	{
-		GLuint shader_id = glCreateShader(shader_type);
-		const GLchar* source = static_cast<const GLchar*>(src.c_str());
-		glShaderSource(shader_id, 1, &source, 0);
-		glCompileShader(shader_id);
+		const GLuint ShaderId = glCreateShader(shader_type);
+		const GLchar* Source = static_cast<const GLchar*>(src.c_str());
+		glShaderSource(ShaderId, 1, &Source, 0);
+		glCompileShader(ShaderId);
 
-		GLint compile_status = GL_FALSE;
-		glGetShaderiv(shader_id, GL_COMPILE_STATUS, &compile_status);
+		GLint CompileStatus = GL_FALSE;
+		glGetShaderiv(ShaderId, GL_COMPILE_STATUS, &CompileStatus);
 
-		checkAlways(compile_status == GL_TRUE);
+		checkAlways(CompileStatus == GL_TRUE);
 
-		return shader_id;
+		return ShaderId;
 	}
 
 	static GLuint LinkShaders(GLuint VertexShader, GLuint FragmentShader)
@@ -169,36 +164,48 @@ struct FEngine
 
 		checkAlways(LinkStatus == GL_TRUE);
 
+		glDetachShader(ProgramId, VertexShader);
+		glDetachShader(ProgramId, FragmentShader);
+
+		glDeleteShader(VertexShader);
+		glDeleteShader(FragmentShader);
+
 		return ProgramId;
 	}
 
 	inline void Init()
 	{
-		MainWindow = SDL_CreateWindow(
-			"DAG",
-			SDL_WINDOWPOS_CENTERED,
-			SDL_WINDOWPOS_CENTERED,
-			ScreenDim.x,
-			ScreenDim.y,
-			SDL_WINDOW_OPENGL
-		);
+		// Initialize GLFW
+		if (!glfwInit())
+		{
+			fprintf(stderr, "Failed to initialize GLFW\n");
+			exit(1);
+		}
 
-		MainContext = SDL_GL_CreateContext(MainWindow);
+		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+		glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+		glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_TRUE);
+		// Open a window and create its OpenGL context
+		MainWindow = glfwCreateWindow(ScreenDim.x, ScreenDim.y, "DAG", NULL, NULL);
+		checkAlways(MainWindow);
+		glfwMakeContextCurrent(MainWindow);
 
-		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
-		SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-		SDL_GL_SetSwapInterval(1);
+		glfwSwapInterval(0);
 
-		int32 Value = 0;
-		SDL_GL_GetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, &Value);
-		std::cout << "SDL_GL_CONTEXT_MAJOR_VERSION : " << Value << std::endl;
+		// Initialize GLEW
+		glewExperimental = true; // Needed for core profile
+		if (glewInit() != GLEW_OK)
+		{
+			fprintf(stderr, "Failed to initialize GLEW\n");
+			exit(1);
+		}
 
-		SDL_GL_GetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, &Value);
-		std::cout << "SDL_GL_CONTEXT_MINOR_VERSION: " << Value << std::endl;
+		// Ensure we can capture the escape key being pressed below
+		glfwSetInputMode(MainWindow, GLFW_STICKY_KEYS, GL_TRUE);
 
-		glewInit();
+		// Dark blue background
+		glClearColor(0.0f, 0.0f, 0.4f, 0.0f);
 
 		const std::string CopyVertexShader =
 			"#version 400 compatibility                                           \n"
@@ -230,6 +237,23 @@ struct FEngine
 
 	void Loop(const FAABB& AABB, const FFinalDag& Dag) const
 	{
+		// Need a dummy VAO to work
+		GLuint VAO = 0;
+		{
+			float Points[] = { 0.0f,  0.0f,  0.0f };
+
+			GLuint VBO = 0;
+			glGenBuffers(1, &VBO);
+			glBindBuffer(GL_ARRAY_BUFFER, VBO);
+			glBufferData(GL_ARRAY_BUFFER, 9 * sizeof(float), Points, GL_STATIC_DRAW);
+
+			glGenVertexArrays(1, &VAO);
+			glBindVertexArray(VAO);
+			glEnableVertexAttribArray(0);
+			glBindBuffer(GL_ARRAY_BUFFER, VBO);
+			glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, NULL);
+		}
+		
 		const uint32 Width = ScreenDim.x;
 		const uint32 Height = ScreenDim.y;
 		FDAGTracer DagTracer(Width, Height);
@@ -238,25 +262,24 @@ struct FEngine
 		while (App.Loop)
 		{
 			App.FrameTimer.Start();
-			App.HandleEvents();
+			App.HandleEvents(MainWindow);
 
 			auto Params = FDAGTracer::GetTraceParams(App.DebugLevel, App.Camera, Width, Height, AABB);
 			DagTracer.ResolvePaths(Params, Dag.Dag, Dag.Colors, Dag.EnclosedLeaves);
 
-			glViewport(0, 0, ScreenDim.x, ScreenDim.y);
+			glClear(GL_COLOR_BUFFER_BIT);
+
 			glUseProgram(CopyShader);
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, DagTracer.GetColorsImage());
 			glUniform1i(RenderBufferUniform, 0);
 			glActiveTexture(GL_TEXTURE0);
+
+			glBindVertexArray(VAO);
 			glDrawArrays(GL_TRIANGLES, 0, 3);
 
-			SDL_GL_SwapWindow(MainWindow);
+			glfwSwapBuffers(MainWindow);
 			App.FrameTimer.End();
 		}
-
-		SDL_GL_DeleteContext(MainContext);
-		SDL_DestroyWindow(MainWindow);
-		SDL_Quit();
 	}
 };

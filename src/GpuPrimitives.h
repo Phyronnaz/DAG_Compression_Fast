@@ -36,7 +36,7 @@ inline auto TransformIterator(const T* Ptr, F Lambda)
 }
 
 template<typename T, EMemoryType MemoryType>
-inline void CheckEqual(const TStaticArray<T, MemoryType>& ArrayA, const TStaticArray<T, MemoryType>& ArrayB)
+inline void CheckEqual(const TFixedArray<T, MemoryType>& ArrayA, const TFixedArray<T, MemoryType>& ArrayB)
 {
 	(void)ArrayA;
 	(void)ArrayB;
@@ -63,7 +63,7 @@ inline void CheckEqual(const TStaticArray<T, MemoryType>& ArrayA, const TStaticA
 }
 
 template<typename T, EMemoryType MemoryType>
-inline void CheckIsSorted(const TStaticArray<T, MemoryType>& Array)
+inline void CheckIsSorted(const TFixedArray<T, MemoryType>& Array)
 {
 	(void)Array;
 #if ENABLE_CHECKS
@@ -127,7 +127,7 @@ inline void CheckFunctionBounds(
 }
 
 template<typename T>
-inline void CheckArrayBounds(const TStaticArray<T, EMemoryType::GPU>& Array, T Min, T Max)
+inline void CheckArrayBounds(const TGpuArray<T>& Array, T Min, T Max)
 {
 	CheckFunctionBounds<uint64, T>([=] GPU_LAMBDA (uint64 Index) { return Array[Index]; }, 0, Array.Num() - 1, Min, Max);
 }
@@ -149,7 +149,7 @@ inline void CheckFunctionIsInjectiveIf(
 	(void)NumOutputs;
 #if ENABLE_CHECKS
 #if 0 // Strict injectivity is probably not needed: we just need to write the same values
-	auto Counters = TStaticArray<uint64, EMemoryType::GPU>("Counters", NumOutputs);
+	auto Counters = TGpuArray<uint64>("Counters", NumOutputs);
 	Counters.MemSet(0);
 	
 	const auto Add = [=] GPU_ONLY_LAMBDA (TIn Value)
@@ -166,8 +166,8 @@ inline void CheckFunctionIsInjectiveIf(
 	Counters.Free();
 #else
 	using TData = typename std::remove_reference<decltype(Data({}))>::type;
-	auto DataTestArray = TStaticArray<TData, EMemoryType::GPU>("DataTest", NumOutputs);
-	auto PreviousIndicesArray = TStaticArray<uint64, EMemoryType::GPU>("PreviousIndicesArray", NumOutputs);
+	auto DataTestArray = TGpuArray<TData>("DataTest", NumOutputs);
+	auto PreviousIndicesArray = TGpuArray<uint64>("PreviousIndicesArray", NumOutputs);
 	DataTestArray.MemSet(0);
 	PreviousIndicesArray.MemSet(0xFF);
 
@@ -257,7 +257,7 @@ inline void CheckFunctionIsInjective(
 template<typename TData, typename TB>
 inline void CheckArrayIsInjective(
 	TData Data, 
-	const TStaticArray<TB, EMemoryType::GPU>& Array, 
+	const TGpuArray<TB>& Array, 
 	uint64 NumOutputs)
 {
 	CheckFunctionIsInjective(Data, Array, uint64(0), Array.Num() - 1, NumOutputs);
@@ -308,20 +308,20 @@ namespace cub
 }
 
 template<typename T>
-inline void SetElement(TStaticArray<T, EMemoryType::GPU>& Array, uint64 Index, T Value)
+inline void SetElement(TGpuArray<T>& Array, uint64 Index, T Value)
 {
 	FMemory::SetGPUValue(&Array[Index], Value);
 }
 template<typename T>
-inline T GetElement(const TStaticArray<T, EMemoryType::GPU>& Array, uint64 Index)
+inline T GetElement(const TGpuArray<T>& Array, uint64 Index)
 {
 	return FMemory::ReadGPUValue(&Array[Index]);
 }
 
 template<typename InType, typename OutType, typename F1>
 inline void AdjacentDifference(
-	const TStaticArray<InType, EMemoryType::GPU>& In,
-	TStaticArray<OutType, EMemoryType::GPU>& Out,
+	const TGpuArray<InType>& In,
+	TGpuArray<OutType>& Out,
 	F1 BinaryOp,
 	OutType FirstElement)
 {
@@ -341,8 +341,8 @@ inline void AdjacentDifference(
 
 template<typename InType, typename OutType, typename F1, typename F2>
 inline void AdjacentDifferenceWithTransform(
-	const TStaticArray<InType, EMemoryType::GPU>& In, F1 Transform,
-	TStaticArray<OutType, EMemoryType::GPU>& Out,
+	const TGpuArray<InType>& In, F1 Transform,
+	TGpuArray<OutType>& Out,
 	F2 BinaryOp,
 	OutType FirstElement)
 {
@@ -363,9 +363,9 @@ inline void AdjacentDifferenceWithTransform(
 
 template<typename TypeIn, typename TypeOut, typename MapFunction>
 inline void ScatterPred(
-	const TStaticArray<TypeIn, EMemoryType::GPU>& In,
+	const TGpuArray<TypeIn>& In,
 	MapFunction Map,
-	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
+	TGpuArray<TypeOut>& Out)
 {
 	CheckFunctionBounds(Map, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjective(In, Map, uint64(0), In.Num() - 1, Out.Num());
@@ -383,9 +383,9 @@ inline void ScatterPred(
 
 template<typename TypeIn, typename TypeOut, typename IndexType>
 inline void Scatter(
-	const TStaticArray<TypeIn, EMemoryType::GPU>& In,
-	const TStaticArray<IndexType, EMemoryType::GPU>& Map,
-	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
+	const TGpuArray<TypeIn>& In,
+	const TGpuArray<IndexType>& Map,
+	TGpuArray<TypeOut>& Out)
 {
 	CheckArrayBounds(Map, IndexType(0), IndexType(Out.Num() - 1));
 	CheckArrayIsInjective(In, Map, Out.Num());
@@ -402,9 +402,9 @@ inline void Scatter(
 
 template<typename TypeIn, typename TypeOut, typename InF, typename IndexType>
 inline void ScatterWithTransform(
-	const TStaticArray<TypeIn, EMemoryType::GPU>& In, InF Transform,
-	const TStaticArray<IndexType, EMemoryType::GPU>& Map,
-	TStaticArray<TypeOut, EMemoryType::GPU>& Out)
+	const TGpuArray<TypeIn>& In, InF Transform,
+	const TGpuArray<IndexType>& Map,
+	TGpuArray<TypeOut>& Out)
 {
 	CheckArrayBounds<IndexType>(Map, 0, IndexType(Out.Num()) - 1);
 	
@@ -424,9 +424,9 @@ inline void ScatterWithTransform(
 
 template<typename TypeIn, typename TypeOut, typename MapFunction, typename F>
 inline void ScatterIf(
-	const TStaticArray<TypeIn, EMemoryType::GPU>& In,
+	const TGpuArray<TypeIn>& In,
 	MapFunction Map,
-	TStaticArray<TypeOut, EMemoryType::GPU>& Out,
+	TGpuArray<TypeOut>& Out,
 	F Condition)
 {
 	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
@@ -447,9 +447,9 @@ inline void ScatterIf(
 
 template<typename TypeIn, typename TypeOut, typename InF, typename MapFunction, typename F>
 inline void ScatterIfWithTransform(
-	const TStaticArray<TypeIn, EMemoryType::GPU>& In, InF Transform,
+	const TGpuArray<TypeIn>& In, InF Transform,
 	MapFunction Map,
-	TStaticArray<TypeOut, EMemoryType::GPU>& Out,
+	TGpuArray<TypeOut>& Out,
 	F Condition)
 {
 	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
@@ -471,8 +471,8 @@ inline void ScatterIfWithTransform(
 
 template<typename InType, typename OutType, typename F>
 inline void Transform(
-	const TStaticArray<InType, EMemoryType::GPU>& In,
-	TStaticArray<OutType, EMemoryType::GPU>& Out,
+	const TGpuArray<InType>& In,
+	TGpuArray<OutType>& Out,
 	F Lambda)
 {
 	checkEqual(In.Num(), Out.Num())
@@ -508,12 +508,12 @@ inline void TransformIf(
 
 template<typename TValueIt, typename TKey, typename TValue, typename F>
 inline void MergePairs(
-	const TStaticArray<TKey, EMemoryType::GPU>& InKeysA,
+	const TGpuArray<TKey>& InKeysA,
 	TValueIt InValuesA,
-	const TStaticArray<TKey, EMemoryType::GPU>& InKeysB,
+	const TGpuArray<TKey>& InKeysB,
 	TValueIt InValuesB,
-	TStaticArray<TKey, EMemoryType::GPU>& OutKeys,
-	TStaticArray<TValue, EMemoryType::GPU>& OutValues,
+	TGpuArray<TKey>& OutKeys,
+	TGpuArray<TValue>& OutValues,
 	F Comp)
 {
 	checkEqual(OutKeys.Num(), OutValues.Num());
@@ -557,7 +557,7 @@ inline void MergePairs(
 }
 
 template<typename T>
-inline void MakeSequence(TStaticArray<T, EMemoryType::GPU>& Array, T Init = 0)
+inline void MakeSequence(TGpuArray<T>& Array, T Init = 0)
 {
 	thrust::sequence(ExecutionPolicy, Array.GetData(), Array.GetData() + Array.Num(), Init);
 	

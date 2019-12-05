@@ -256,7 +256,7 @@ FVoxelizer::~FVoxelizer()
 	FMemory::UnregisterCustomAlloc(Positions);
 }
 
-TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB& AABB) const
+TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 {
 	PROFILE_FUNCTION();
 	
@@ -310,7 +310,7 @@ TStaticArray<uint64, EMemoryType::GPU> FVoxelizer::GenerateFragments(const FAABB
 		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 	}
 	glUseProgram(0);
-	checkfAlways(FragCount <= TexDim, "Not enough fragment memory: has %fMB, needs %fMB", Utils::ToMB(TexDim), Utils::ToMB(FragCount));
+	checkfAlways(FragCount <= TexDim, "VOXELIZER_MAX_NUM_FRAGMENTS too low: is %u, needs to be >= %u", TexDim, FragCount);
 	return { Positions, FragCount };
 }
 

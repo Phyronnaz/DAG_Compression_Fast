@@ -11,7 +11,7 @@ class FVoxelizer
 public:
 	const int32 SubGridSize;
 	const FScene& Scene;
-	static constexpr int32 TexDim = FRAGMENTS_MEMORY_IN_MILLIONS * 1024 * 1024;
+	static constexpr int32 TexDim = VOXELIZER_MAX_NUM_FRAGMENTS;
 
 private:
 	const std::vector<std::size_t> NodesToRender;
@@ -29,7 +29,7 @@ public:
 	~FVoxelizer();
 
 	// Array is only valid while the voxelizer object hasn't been destroyed!
-	TStaticArray<uint64, EMemoryType::GPU> GenerateFragments(const FAABB& AABB) const;
+	TGpuArray<uint64> GenerateFragments(const FAABB& AABB) const;
 
 private:
 	void Draw() const;

@@ -149,7 +149,7 @@ struct Leaf
 
 struct FDAG
 {
-	TStaticArray<uint32, EMemoryType::GPU> data;
+	TGpuArray<uint32> data;
 	
     constexpr static uint32 levels = LEVELS;
 
@@ -183,8 +183,8 @@ struct FDAG
 
 struct FColors
 {
-	TStaticArray<uint32, EMemoryType::GPU> colors;
-	TStaticArray<uint64, EMemoryType::GPU> enclosedLeaves;
+	TGpuArray<uint32> colors;
+	TGpuArray<uint64> enclosedLeaves;
 
 	HOST_DEVICE uint64 get_leaves_count(uint32 level, uint32 node) const
 	{
@@ -540,9 +540,9 @@ __global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, cons
 
 void FDAGTracer::ResolvePaths(
 	const TracePathsParams& Params,
-	const TStaticArray<uint32, EMemoryType::GPU>& Dag,
-	const TStaticArray<uint32, EMemoryType::GPU>& Colors,
-	const TStaticArray<uint64, EMemoryType::GPU>& EnclosedLeaves)
+	const TGpuArray<uint32>& Dag,
+	const TGpuArray<uint32>& Colors,
+	const TGpuArray<uint64>& EnclosedLeaves)
 {
 	CUDA_CHECK_ERROR();
 

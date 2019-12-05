@@ -26,6 +26,11 @@ public:
 		Queue.pop();
 		return true;
 	}
+	bool IsEmpty() const
+	{
+		std::unique_lock<std::mutex> Lock(Mutex);
+		return Queue.empty();
+	}
 	
 private:
 	std::queue<T> Queue;
@@ -38,6 +43,8 @@ public:
 	using FTask = std::function<void()>;
 	
 private:
+	const char* const Name;
+	
 	std::vector<std::thread> Threads;
 	TSafeQueue<FTask> Tasks;
 	std::atomic<uint32> Stop{ 0 };
@@ -50,7 +57,8 @@ private:
 	std::condition_variable OnAllWaiting;
 	
 public:
-	explicit FThreadPool(int32 NumThreads)
+	explicit FThreadPool(int32 NumThreads, const char* Name)
+		: Name(Name)
 	{
 		PROFILE_FUNCTION();
 		
@@ -79,8 +87,9 @@ public:
 		}
 		else
 		{
+			const auto ShouldWakeup = [this]() { return WaitingThreads == Threads.size(); };
 			std::unique_lock<std::mutex> Lock(OnAllWaitingMutex);
-			OnAllWaiting.wait(Lock);
+			OnAllWaiting.wait(Lock, ShouldWakeup);
 		}
 	}
 	void Enqueue(FTask Task)
@@ -106,7 +115,7 @@ private:
 	void RunThread()
 	{
 		PROFILE_FUNCTION();
-		NAME_THREAD("ThreadPool");
+		NAME_THREAD(Name);
 		
 		while (!Stop)
 		{
@@ -118,11 +127,12 @@ private:
 			else
 			{
 				std::unique_lock<std::mutex> Lock(OnEnqueueMutex);
-				if (1 + WaitingThreads.fetch_add(1) == Threads.size())
+				if (WaitingThreads.fetch_add(1) + 1 == Threads.size())
 				{
 					OnAllWaiting.notify_all();
 				}
-				OnEnqueue.wait(Lock);
+				const auto ShouldWakeup = [this]() { return Stop || !Tasks.IsEmpty(); };
+				OnEnqueue.wait(Lock, ShouldWakeup);
 				WaitingThreads--;
 			}
 		}

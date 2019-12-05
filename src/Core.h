@@ -8,8 +8,10 @@
 #define LEVELS 12
 #define TOP_LEVEL MAX(LEVELS - 8, 0)
 #define SUBDAG_LEVELS 10
-#define FRAGMENTS_MEMORY_IN_MILLIONS 50
+#define VOXELIZER_MAX_NUM_FRAGMENTS 50 * 1024 * 1024
 #define GPU_MEMORY_ALLOCATED_IN_GB 3.0
+
+#define NUM_MERGE_COLORS_THREADS 4
 
 #define NUM_MERGE_THREADS 0
 #define PRINT_DEBUG_INFO 0
@@ -172,17 +174,6 @@ using uint64 = std::uint64_t;
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
-
-#define DEFAULT_STREAM cudaStream_t(0)
-
-#define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
-#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL cudaStreamSynchronize(0)
-#define CUDA_CHECK_ERROR() \
-	{ \
-		CUDA_CHECKED_CALL cudaStreamSynchronize(0); \
-		CUDA_CHECKED_CALL cudaGetLastError(); \
-	}
-
 namespace detail
 {
 	struct CudaErrorChecker
@@ -233,6 +224,16 @@ namespace detail
 	};
 }
 
+#define DEFAULT_STREAM cudaStream_t(0)
+
+#define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
+#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL cudaStreamSynchronize(0)
+#define CUDA_CHECK_ERROR() \
+	{ \
+		CUDA_CHECKED_CALL cudaStreamSynchronize(0); \
+		CUDA_CHECKED_CALL cudaGetLastError(); \
+	}
+
 #include <limits>
 
 template<typename T, typename U>
@@ -252,26 +253,26 @@ HOST_DEVICE T Cast(U Value)
 #include "tracy/Tracy.hpp"
 #pragma warning ( pop )
 
-#ifndef TRACY_ENABLE
-#define ZoneScopedf(Format, ...) if(0) { printf(Format, ##__VA_ARGS__); } // Avoid unused variable warnings
-#else
-#define ZoneScopedf(Format, ...) \
-	ZoneScoped; \
+#include "nvToolsExt.h"
+#include "nvToolsExtCuda.h"
+
+#ifdef TRACY_ENABLE
+#define PROFILE_SCOPE_COLOR_TRACY(Color, Format, ...) \
+	ZoneScopedC(Color); \
 	{ \
 		char __String[1024]; \
 		const int32 __Size = sprintf(__String, Format, ##__VA_ARGS__); \
 		checkInfEqual(__Size, 1024); \
 		ZoneName(__String, __Size); \
 	}
-#endif
 
-#if 0
-#define PROFILE_SCOPE(Format, ...) ZoneScopedf(Format, ##__VA_ARGS__)
-#define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__)
+#define MARK_TRACY(Name) FrameMarkNamed(Name)
+#define NAME_THREAD_TRACY(Name) tracy::SetThreadName(Name);
 #else
-
-#include "nvToolsExt.h"
-#include "nvToolsExtCuda.h"
+#define PROFILE_SCOPE_COLOR_TRACY(Color, Format, ...)
+#define MARK_TRACY(Name)
+#define NAME_THREAD_TRACY(Name)
+#endif
 
 struct FNVExtScope
 {
@@ -301,18 +302,22 @@ struct FNVExtScope
 #define JOIN_IMPL(A, B) A ## B
 #define JOIN(A, B) JOIN_IMPL(A, B)
 
+#define COLOR_BLACK 0x000000
 #define COLOR_RED 0xFF0000
 #define COLOR_GREEN 0x00FF00
 #define COLOR_BLUE 0x0000FF
 #define COLOR_YELLOW 0xFFFF00
 
-#define PROFILE_SCOPE_COLOR(Color, Format, ...) FNVExtScope JOIN(ScopePerf, __LINE__)(Color, Format, ##__VA_ARGS__);
-#define PROFILE_FUNCTION_COLOR(Color) PROFILE_SCOPE_COLOR(Color, __FUNCTION__);
+#define PROFILE_SCOPE_COLOR_NV(Color, Format, ...) FNVExtScope JOIN(ScopePerf, __LINE__)(Color, Format, ##__VA_ARGS__);
 
-#define PROFILE_SCOPE(Format, ...) PROFILE_SCOPE_COLOR(COLOR_RED, Format, ##__VA_ARGS__);
+#define MARK_NV(Name) nvtxMarkA(Name)
+#define NAME_THREAD_NV(Name) nvtxNameOsThreadA(GetCurrentThreadId(), Name);
+
+#define PROFILE_SCOPE_COLOR(Color, Format, ...) PROFILE_SCOPE_COLOR_NV(Color, Format, ##__VA_ARGS__); PROFILE_SCOPE_COLOR_TRACY(Color, Format, ##__VA_ARGS__);
+#define PROFILE_SCOPE(Format, ...) PROFILE_SCOPE_COLOR_NV(COLOR_RED, Format, ##__VA_ARGS__); PROFILE_SCOPE_COLOR_TRACY(COLOR_BLACK, Format, ##__VA_ARGS__);
+
+#define PROFILE_FUNCTION_COLOR(Color) PROFILE_SCOPE_COLOR(Color, __FUNCTION__);
 #define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__);
 
-#define MARK(Name) nvtxMarkA(Name)
-#define NAME_THREAD(Name) nvtxNameOsThreadA(GetCurrentThreadId(), Name);
-
-#endif
+#define MARK(Name) MARK_NV(Name); MARK_TRACY(Name);
+#define NAME_THREAD(Name) NAME_THREAD_NV(Name); NAME_THREAD_TRACY(Name);

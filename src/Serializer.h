@@ -41,7 +41,7 @@ public:
 		Write(&Data, sizeof(double));
 	}
 	template<typename T, typename Size = uint64>
-	inline void Write(const TStaticArray<T, EMemoryType::CPU, Size>& Array)
+	inline void Write(const TFixedArray<T, EMemoryType::CPU, Size>& Array)
 	{
 		Write(Array.Num());
 		Write(Array.GetData(), Array.Num() * sizeof(T));
@@ -86,12 +86,12 @@ public:
 		Read(&Data, sizeof(double));
 	}
 	template<typename T, typename TSize = uint64>
-	inline void Read(TStaticArray<T, EMemoryType::CPU, TSize>& Array, const char* Name)
+	inline void Read(TFixedArray<T, EMemoryType::CPU, TSize>& Array, const char* Name)
 	{
 		check(!Array.IsValid());
 		TSize Size;
 		Read(Size);
-		Array = TStaticArray<T, EMemoryType::CPU, TSize>(Name, Size);
+		Array = TFixedArray<T, EMemoryType::CPU, TSize>(Name, Size);
 		Read(Array.GetData(), Array.Num() * sizeof(T));
 	}
 

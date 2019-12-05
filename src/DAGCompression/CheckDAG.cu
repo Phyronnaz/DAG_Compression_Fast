@@ -57,7 +57,7 @@ template void DAGCompression::CheckLevelIndices<FGpuLevel>(const FGpuLevel& Leve
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-uint64 CheckDagImpl(const TStaticArray<uint32, EMemoryType::CPU>& Dag, const TStaticArray<uint64, EMemoryType::CPU>& EnclosedLeaves, uint32 Index, uint32 Level)
+uint64 CheckDagImpl(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& EnclosedLeaves, uint32 Index, uint32 Level)
 {
 	if (Level == LEVELS - 2)
 	{
@@ -100,7 +100,7 @@ void DAGCompression::CheckDag(const FFinalDag& FinalDag)
 #endif
 }
 
-uint64 DAGCompression::CheckDag(const TStaticArray<uint32, EMemoryType::CPU>& Dag, const TStaticArray<uint64, EMemoryType::CPU>& EnclosedLeaves)
+uint64 DAGCompression::CheckDag(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& EnclosedLeaves)
 {
 #if ENABLE_CHECKS
 	return CheckDagImpl(Dag, EnclosedLeaves, 0, 0);

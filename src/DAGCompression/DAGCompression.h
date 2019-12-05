@@ -21,9 +21,9 @@ HOST_DEVICE uint64 HashChildrenHashes(uint64 ChildrenHashes[8])
 
 struct FCpuLevel
 {
-	TStaticArray<uint8, EMemoryType::CPU> ChildMasks;
-	TStaticArray<FChildrenIndices, EMemoryType::CPU> ChildrenIndices;
-	TStaticArray<uint64, EMemoryType::CPU> Hashes;
+	TCpuArray<uint8> ChildMasks;
+	TCpuArray<FChildrenIndices> ChildrenIndices;
+	TCpuArray<uint64> Hashes;
 
 	inline void Free()
 	{
@@ -35,17 +35,17 @@ struct FCpuLevel
 
 struct FGpuLevel
 {
-	TStaticArray<uint8, EMemoryType::GPU> ChildMasks;
-	TStaticArray<FChildrenIndices, EMemoryType::GPU> ChildrenIndices;
-	TStaticArray<uint64, EMemoryType::GPU> Hashes;
+	TGpuArray<uint8> ChildMasks;
+	TGpuArray<FChildrenIndices> ChildrenIndices;
+	TGpuArray<uint64> Hashes;
 
 	FCpuLevel ToCPU() const
 	{
 		FCpuLevel CpuLevel;
 
-		CpuLevel.ChildMasks = TStaticArray<uint8, EMemoryType::CPU>("ChildMasks", ChildMasks.Num());
-		CpuLevel.ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::CPU>("ChildrenIndices", ChildrenIndices.Num());
-		CpuLevel.Hashes = TStaticArray<uint64, EMemoryType::CPU>("Hashes", Hashes.Num());
+		CpuLevel.ChildMasks = TCpuArray<uint8>("ChildMasks", ChildMasks.Num());
+		CpuLevel.ChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", ChildrenIndices.Num());
+		CpuLevel.Hashes = TCpuArray<uint64>("Hashes", Hashes.Num());
 
 		ChildMasks.CopyToCPU(CpuLevel.ChildMasks);
 		ChildrenIndices.CopyToCPU(CpuLevel.ChildrenIndices);
@@ -55,9 +55,9 @@ struct FGpuLevel
 	}
 	void FromCPU(const FCpuLevel& CpuLevel, const bool LoadHashes = true)
 	{
-		ChildMasks = TStaticArray<uint8, EMemoryType::GPU>("ChildMasks", CpuLevel.ChildMasks.Num());
-		ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::GPU>("ChildrenIndices", CpuLevel.ChildrenIndices.Num());
-		if (LoadHashes) Hashes = TStaticArray<uint64, EMemoryType::GPU>("Hashes", CpuLevel.Hashes.Num());
+		ChildMasks = TGpuArray<uint8>("ChildMasks", CpuLevel.ChildMasks.Num());
+		ChildrenIndices = TGpuArray<FChildrenIndices>("ChildrenIndices", CpuLevel.ChildrenIndices.Num());
+		if (LoadHashes) Hashes = TGpuArray<uint64>("Hashes", CpuLevel.Hashes.Num());
 
 		CpuLevel.ChildMasks.CopyToGPU(ChildMasks);
 		CpuLevel.ChildrenIndices.CopyToGPU(ChildrenIndices);
@@ -75,8 +75,8 @@ struct FGpuLevel
 struct FCpuDag
 {
 	std::vector<FCpuLevel> Levels;
-	TStaticArray<uint64, EMemoryType::CPU> Leaves;
-	TStaticArray<uint32, EMemoryType::CPU> Colors;
+	TCpuArray<uint64> Leaves;
+	TCpuArray<uint32> Colors;
 
 	inline void Free()
 	{
@@ -92,33 +92,35 @@ struct FCpuDag
 
 struct FFinalDag
 {
-	TStaticArray<uint32, EMemoryType::GPU> Dag;
-	TStaticArray<uint32, EMemoryType::GPU> Colors;
-	TStaticArray<uint64, EMemoryType::GPU> EnclosedLeaves;
+	TGpuArray<uint32> Dag;
+	TGpuArray<uint32> Colors;
+	TGpuArray<uint64> EnclosedLeaves;
 };
 
 namespace DAGCompression
 {
 	FFinalDag Compress_SingleThreaded(const FScene& Scene, const FAABB& AABB);
+	FFinalDag Compress_MultiThreaded(const FScene& Scene, const FAABB& AABB);
 	
-	FCpuDag CreateSubDAG(TStaticArray<uint64, EMemoryType::GPU>& Fragments);
-	FCpuDag MergeDAGs(std::vector<FCpuDag>&& CpuDags);
-	FFinalDag CreateFinalDAG(FCpuDag&& CpuDag);
+	FCpuDag CreateSubDAG(TGpuArray<uint64>& Fragments);
+	FCpuDag MergeDAGs(std::vector<FCpuDag> CpuDags);
+	FFinalDag CreateFinalDAG(FCpuDag CpuDag);
 
-	// Will trash Fragments
-	TStaticArray<uint64, EMemoryType::GPU> SortFragmentsAndRemoveDuplicates(TStaticArray<uint64, EMemoryType::GPU>& Fragments);
-	TStaticArray<uint32, EMemoryType::GPU> ExtractColorsAndFixFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments);
-	TStaticArray<uint64, EMemoryType::GPU> ExtractLeavesAndShiftReduceFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments);
-	// If leaves: Level only has Hashes valid
-	void SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryType::GPU>& OutHashesToSortedUniqueHashes);
-	FGpuLevel ExtractLevelAndShiftReduceFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments, const TStaticArray<uint32, EMemoryType::GPU>& FragmentIndicesToChildrenIndices);
-	void ComputeHashes(FGpuLevel& Level, const TStaticArray<uint64, EMemoryType::GPU>& LowerLevelHashes);
+	// Will free Fragments
+	TGpuArray<uint64> SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments);
+	TGpuArray<uint32> ExtractColorsAndFixFragments(TGpuArray<uint64>& Fragments);
+	TGpuArray<uint64> ExtractLeavesAndShiftReduceFragments(TGpuArray<uint64>& Fragments);
+	void SortLeaves(TGpuArray<uint64>& Leaves, TGpuArray<uint32>& OutHashesToSortedUniqueHashes);
+	void SortLevel(FGpuLevel& Level, TGpuArray<uint32>& OutHashesToSortedUniqueHashes);
+	FGpuLevel ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>& Fragments, const TGpuArray<uint32>& FragmentIndicesToChildrenIndices);
+	void ComputeHashes(FGpuLevel& Level, const TGpuArray<uint64>& LowerLevelHashes);
 
 	FCpuDag MergeDAGs(FCpuDag A, FCpuDag B);
+	std::thread MergeColors(std::vector<TCpuArray<uint32>> Colors, TCpuArray<uint32>& MergedColors);
 	
 	template<typename T>
 	void CheckLevelIndices(const T& Level);
 	void CheckDag(const FFinalDag& FinalDag);
 	// Returns total num leaves
-	uint64 CheckDag(const TStaticArray<uint32, EMemoryType::CPU>& Dag, const TStaticArray<uint64, EMemoryType::CPU>& EnclosedLeaves);
+	uint64 CheckDag(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& EnclosedLeaves);
 }

@@ -29,9 +29,9 @@ public:
 	};
 	void ResolvePaths(
 		const TracePathsParams& Params, 
-		const TStaticArray<uint32, EMemoryType::GPU>& Dag, 
-		const TStaticArray<uint32, EMemoryType::GPU>& Colors, 
-		const TStaticArray<uint64, EMemoryType::GPU>& EnclosedLeaves);
+		const TGpuArray<uint32>& Dag, 
+		const TGpuArray<uint32>& Colors, 
+		const TGpuArray<uint64>& EnclosedLeaves);
 
 	template<typename T1, typename T2>
 	inline static TracePathsParams GetTraceParams(

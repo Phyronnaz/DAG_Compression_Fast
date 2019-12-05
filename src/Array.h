@@ -4,18 +4,118 @@
 #include "Utils.h"
 #include "Memory.h"
 
-template<typename ElementType, EMemoryType MemoryType, typename TSize = uint64>
+template<typename ElementType, uint64 ArraySize>
 struct TStaticArray
 {
 	using TElementType = ElementType;
 	
 	TStaticArray() = default;
-	HOST_DEVICE TStaticArray(TElementType* RESTRICT Data, TSize Size)
+
+	void MemSet(uint8 Value)
+	{
+		PROFILE_FUNCTION();
+		std::memset(GetData(), Value, SizeInBytes());
+	}
+	
+	static uint64 Num()
+	{
+		return ArraySize;
+	}
+
+	const TElementType* GetData() const
+	{
+		return ArrayData;
+	}
+	TElementType* GetData()
+	{
+		return ArrayData;
+	}
+	
+	static bool IsValidIndex(uint64 Index)
+	{
+		return Index < ArraySize;
+	}
+	static uint64 SizeInBytes()
+	{
+		return ArraySize * sizeof(TElementType);
+	}
+	static double SizeInMB()
+	{
+		return Utils::ToMB(SizeInBytes());
+	}
+
+	TElementType& operator[](uint64 Index)
+	{
+		checkf(Index < ArraySize, "invalid index: %" PRIu64 " for size %" PRIu64, Index, ArraySize);
+		return ArrayData[Index];
+	}
+	const TElementType& operator[](uint64 Index) const
+	{
+		checkf(Index < ArraySize, "invalid index: %" PRIu64 " for size %" PRIu64, Index, ArraySize);
+		return ArrayData[Index];
+	}
+
+	TElementType& operator()(uint64 Index)
+	{
+		return (*this)[Index];
+	}
+	const TElementType& operator()(uint64 Index) const
+	{
+		return (*this)[Index];
+	}
+
+	const TElementType* begin() const
+	{
+		return ArrayData;
+	}
+	const TElementType* end() const
+	{
+		return ArrayData + ArraySize;
+	}
+	
+	TElementType* begin()
+	{
+		return ArrayData;
+	}
+	TElementType* end()
+	{
+		return ArrayData + ArraySize;
+	}
+
+	uint64 Find(const TElementType& Element) const
+	{
+		for (uint64 Index = 0; Index < Num(); Index++)
+		{
+			if ((*this)[Index] == Element)
+			{
+				return Index;
+			}
+		}
+		return uint64(-1);
+	}
+	uint64 FindChecked(const TElementType& Element) const
+	{
+		const uint64 Index = Find(Element);
+		check(Index != uint64(-1));
+		return Index;
+	}
+
+private:
+	TElementType ArrayData[ArraySize];
+};
+
+template<typename ElementType, EMemoryType MemoryType, typename TSize = uint64>
+struct TFixedArray
+{
+	using TElementType = ElementType;
+	
+	TFixedArray() = default;
+	HOST_DEVICE TFixedArray(TElementType* RESTRICT Data, TSize Size)
 		: ArrayData(Data)
 		, ArraySize(Size)
 	{
 	}
-	TStaticArray(const char* Name, TSize Size)
+	TFixedArray(const char* Name, TSize Size)
 		: ArrayData(FMemory::Malloc<TElementType>(Name, Size * sizeof(TElementType), MemoryType))
 		, ArraySize(Size)
 	{
@@ -23,37 +123,37 @@ struct TStaticArray
 		MemSet(0xFF);
 #endif
 	}
-	TStaticArray(const char* Name, std::initializer_list<TElementType> List)
-		: TStaticArray(Name, List.size())
+	TFixedArray(const char* Name, std::initializer_list<TElementType> List)
+		: TFixedArray(Name, List.size())
 	{
 		static_assert(MemoryType == EMemoryType::CPU, "");
 		std::memcpy(ArrayData, List.begin(), SizeInBytes());
 	}
-	HOST_DEVICE explicit TStaticArray(decltype(nullptr))
-		: TStaticArray(nullptr, 0)
+	HOST_DEVICE explicit TFixedArray(decltype(nullptr))
+		: TFixedArray(nullptr, 0)
 	{
 	}
 
-	HOST_DEVICE TStaticArray(const TStaticArray& Other)
-		: ArrayData(Other.ArrayData),
-		  ArraySize(Other.ArraySize)
+	HOST_DEVICE TFixedArray(const TFixedArray& Other)
+		: ArrayData(Other.ArrayData)
+		, ArraySize(Other.ArraySize)
 	{
 	}
-	HOST_DEVICE TStaticArray(TStaticArray&& Other) noexcept
-		: ArrayData(Other.ArrayData),
-		  ArraySize(Other.ArraySize)
+	HOST_DEVICE TFixedArray(TFixedArray&& Other) noexcept
+		: ArrayData(Other.ArrayData)
+		, ArraySize(Other.ArraySize)
 	{
 		Other.Reset();
 	}
 
-	HOST_DEVICE TStaticArray& operator=(const TStaticArray& Other)
+	HOST_DEVICE TFixedArray& operator=(const TFixedArray& Other)
 	{
 		check(!IsValid());
 		ArrayData = Other.ArrayData;
 		ArraySize = Other.ArraySize;
 		return *this;
 	}
-	HOST_DEVICE TStaticArray& operator=(TStaticArray&& Other) noexcept
+	HOST_DEVICE TFixedArray& operator=(TFixedArray&& Other) noexcept
 	{
 		check(!IsValid());
 		ArrayData = Other.ArrayData;
@@ -63,51 +163,51 @@ struct TStaticArray
 	}
 
 	template<typename TOther>
-	HOST TStaticArray<TOther, MemoryType, TSize> CastTo() const
+	HOST TFixedArray<TOther, MemoryType, TSize> CastTo() const
 	{
 		checkAlways((ArraySize * sizeof(TElementType)) % sizeof(TOther) == 0);
 
-		TStaticArray<TOther, MemoryType, TSize> Result;
+		TFixedArray<TOther, MemoryType, TSize> Result;
 		Result.ArrayData = reinterpret_cast<TOther*>(ArrayData);
 		Result.ArraySize = (ArraySize * sizeof(TElementType)) / sizeof(TOther);
 		return Result;
 	}
 
-	HOST TStaticArray<TElementType, EMemoryType::GPU, TSize> CreateGPU() const
+	HOST TFixedArray<TElementType, EMemoryType::GPU, TSize> CreateGPU() const
 	{
 		static_assert(MemoryType == EMemoryType::CPU, "");
 		if (!IsValid())
 		{
 			return {};
 		}
-        auto Result = TStaticArray<TElementType, EMemoryType::GPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
-        CopyToGPU(Result);
-        return Result;
-    }
-	HOST TStaticArray<TElementType, EMemoryType::CPU, TSize> CreateCPU() const
+		auto Result = TFixedArray<TElementType, EMemoryType::GPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
+		CopyToGPU(Result);
+		return Result;
+	}
+	HOST TFixedArray<TElementType, EMemoryType::CPU, TSize> CreateCPU() const
 	{
 		static_assert(MemoryType == EMemoryType::GPU, "");
 		if (!IsValid())
 		{
 			return {};
 		}
-		auto Result = TStaticArray<TElementType, EMemoryType::CPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
-        CopyToCPU(Result);
-        return Result;
-    }
+		auto Result = TFixedArray<TElementType, EMemoryType::CPU, TSize>(FMemory::GetAllocInfo(GetData()).Name, Num());
+		CopyToCPU(Result);
+		return Result;
+	}
 
-    HOST void CopyToGPU(TStaticArray<TElementType, EMemoryType::GPU, TSize>& GpuArray) const
-    {
+	HOST void CopyToGPU(TFixedArray<TElementType, EMemoryType::GPU, TSize>& GpuArray) const
+	{
 		static_assert(MemoryType == EMemoryType::CPU, "");
-        check(GpuArray.Num() == Num());
-        CUDA_CHECKED_CALL cudaMemcpyAsync(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
-		CUDA_CHECKED_CALL cudaStreamSynchronize(0);
-    }
-    HOST void CopyToCPU(TStaticArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
-    {
+		check(GpuArray.Num() == Num());
+		CUDA_CHECKED_CALL cudaMemcpyAsync(GpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyHostToDevice);
+		CUDA_SYNCHRONIZE_STREAM();
+	}
+	HOST void CopyToCPU(TFixedArray<TElementType, EMemoryType::CPU, TSize>& CpuArray) const
+	{
 		static_assert(MemoryType == EMemoryType::GPU, "");
-        check(CpuArray.Num() == Num());
-        CUDA_CHECKED_CALL cudaMemcpyAsync(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
+		check(CpuArray.Num() == Num());
+		CUDA_CHECKED_CALL cudaMemcpyAsync(CpuArray.GetData(), GetData(), SizeInBytes(), cudaMemcpyDeviceToHost);
 		CUDA_SYNCHRONIZE_STREAM();
 	}
 
@@ -126,14 +226,14 @@ struct TStaticArray
 		}
 	}
 
-    HOST void Free()
-    {
+	HOST void Free()
+	{
 		FMemory::Free(ArrayData);
 		ArrayData = nullptr;
 		ArraySize = 0;
 	}
-    HOST_DEVICE void Reset()
-    {
+	HOST_DEVICE void Reset()
+	{
 		ArrayData = nullptr;
 		ArraySize = 0;
 	}
@@ -195,11 +295,11 @@ struct TStaticArray
 		return (*this)[Index];
 	}
 	
-	HOST_DEVICE bool operator==(const TStaticArray& Other) const
+	HOST_DEVICE bool operator==(const TFixedArray& Other) const
 	{
 		return Other.ArrayData == ArrayData && Other.ArraySize == ArraySize;
 	}
-	HOST_DEVICE bool operator!=(const TStaticArray& Other) const
+	HOST_DEVICE bool operator!=(const TFixedArray& Other) const
 	{
 		return Other.ArrayData != ArrayData || Other.ArraySize != ArraySize;
 	}
@@ -245,59 +345,65 @@ protected:
 	TSize ArraySize = 0;
 
 	template<typename, EMemoryType, typename>
-	friend struct TStaticArray;
+	friend struct TFixedArray;
 };
 
+template<typename TElementType>
+using TGpuArray = TFixedArray<TElementType, EMemoryType::GPU>;
+
+template<typename TElementType>
+using TCpuArray = TFixedArray<TElementType, EMemoryType::CPU>;
+
 template<typename TElementType, EMemoryType MemoryType, typename TSize = uint64>
-struct TDynamicArray : TStaticArray<TElementType, MemoryType, TSize>
+struct TDynamicArray : TFixedArray<TElementType, MemoryType, TSize>
 {
 public:
 	TDynamicArray() = default;
 	TDynamicArray(TElementType* RESTRICT Data, TSize Size)
-		: TStaticArray<TElementType, MemoryType, TSize>(Data, Size)
+		: TFixedArray<TElementType, MemoryType, TSize>(Data, Size)
 		, AllocatedSize(Size)
 	{
 	}
 
 	explicit TDynamicArray(decltype(nullptr))
-		: TStaticArray<TElementType, MemoryType, TSize>(nullptr, 0)
+		: TFixedArray<TElementType, MemoryType, TSize>(nullptr, 0)
 		, AllocatedSize(0)
 	{
 	}
-	explicit TDynamicArray(const TStaticArray<TElementType, MemoryType, TSize>& Array)
-		: TStaticArray<TElementType, MemoryType, TSize>(Array)
+	explicit TDynamicArray(const TFixedArray<TElementType, MemoryType, TSize>& Array)
+		: TFixedArray<TElementType, MemoryType, TSize>(Array)
 		, AllocatedSize(Array.Num())
 	{
 	}
 	TDynamicArray(const char* Name, TSize Size)
-		: TStaticArray<TElementType, MemoryType, TSize>(Name, Size)
+		: TFixedArray<TElementType, MemoryType, TSize>(Name, Size)
 		, AllocatedSize(Size)
 	{
 	}
 
-    HOST void CopyToGPU(TDynamicArray<TElementType, EMemoryType::GPU, TSize>& GPUArray) const
-    {
+	HOST void CopyToGPU(TDynamicArray<TElementType, EMemoryType::GPU, TSize>& GPUArray) const
+	{
 		PROFILE_FUNCTION();
-		
+
 		static_assert(MemoryType == EMemoryType::CPU, "");
-        if (!GPUArray.is_valid())
-        {
-            GPUArray = this->Allocate(FMemory::GetAllocInfo(this->GetData()).Name, this->GetAllocatedSize(), EMemoryType::GPU);
-        }
-        if (GPUArray.GetAllocatedSize() < this->size())
-        {
-            GPUArray.Reserve(this->GetAllocatedSize() - GPUArray.GetAllocatedSize());
-        }
-        GPUArray.ArraySize = this->Num();
-        CUDA_CHECKED_CALL cudaMemcpyAsync(GPUArray.GetData(), this->GetData(), this->SizeInBytes(), cudaMemcpyHostToDevice);
-		CUDA_CHECKED_CALL cudaStreamSynchronize(0);
-    }
+		if (!GPUArray.is_valid())
+		{
+			GPUArray = this->Allocate(FMemory::GetAllocInfo(this->GetData()).Name, this->GetAllocatedSize(), EMemoryType::GPU);
+		}
+		if (GPUArray.GetAllocatedSize() < this->size())
+		{
+			GPUArray.Reserve(this->GetAllocatedSize() - GPUArray.GetAllocatedSize());
+		}
+		GPUArray.ArraySize = this->Num();
+		CUDA_CHECKED_CALL cudaMemcpyAsync(GPUArray.GetData(), this->GetData(), this->SizeInBytes(), cudaMemcpyHostToDevice);
+		CUDA_SYNCHRONIZE_STREAM();
+	}
 
 	HOST_DEVICE TSize GetAllocatedSize() const
 	{
 		return AllocatedSize;
 	}
-	
+
 	HOST_DEVICE uint64 AllocatedSizeInBytes() const
 	{
 		return AllocatedSize * sizeof(TElementType);
@@ -408,5 +514,5 @@ struct TBitArray
 	}
 
 private:
-	TStaticArray<uint32, MemoryType, TSize> Array;
+	TFixedArray<uint32, MemoryType, TSize> Array;
 };

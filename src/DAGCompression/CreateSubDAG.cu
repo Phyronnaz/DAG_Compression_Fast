@@ -1,7 +1,7 @@
 #include "DAGCompression/DAGCompression.h"
 #include "GpuPrimitives.h"
 
-HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const TStaticArray<uint64, EMemoryType::GPU>& ChildrenArray)
+HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const TGpuArray<uint64>& ChildrenArray)
 {
 	uint64 ChildrenHashes[8];
 	for (int32 Index = 0; Index < 8; Index++)
@@ -12,9 +12,9 @@ HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const T
 	return HashChildrenHashes(ChildrenHashes);
 }
 
-void DAGCompression::ComputeHashes(FGpuLevel& Level, const TStaticArray<uint64, EMemoryType::GPU>& LowerLevelHashes)
+void DAGCompression::ComputeHashes(FGpuLevel& Level, const TGpuArray<uint64>& LowerLevelHashes)
 {
-	Level.Hashes = TStaticArray<uint64, EMemoryType::GPU>("Hashes", Level.ChildrenIndices.Num());
+	Level.Hashes = TGpuArray<uint64>("Hashes", Level.ChildrenIndices.Num());
 	Transform(Level.ChildrenIndices, Level.Hashes, [=] GPU_LAMBDA (const FChildrenIndices & Children) { return HashChildren(Children, LowerLevelHashes); });
 
 #if ENABLE_CHECKS && DEBUG_GPU_ARRAYS
@@ -40,11 +40,11 @@ void DAGCompression::ComputeHashes(FGpuLevel& Level, const TStaticArray<uint64, 
 #endif
 }
 
-TStaticArray<uint64, EMemoryType::GPU> DAGCompression::SortFragmentsAndRemoveDuplicates(TStaticArray<uint64, EMemoryType::GPU>& Fragments)
+TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments)
 {
 	PROFILE_FUNCTION();
 
-	auto NewFragments = TStaticArray<uint64, EMemoryType::GPU>("Fragments", Fragments.Num());
+	auto NewFragments = TGpuArray<uint64>("Fragments", Fragments.Num());
 
 	{
 		const int32 Num = Cast<int32>(Fragments.Num());
@@ -59,13 +59,14 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::SortFragmentsAndRemoveDup
 		CUDA_CHECK_ERROR();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
-		// Ends up in different buffers on different GPUs
-		if (Keys.Current() != Fragments.GetData())
+		if (Keys.Current() != NewFragments.GetData())
 		{
-			CUDA_CHECKED_CALL cudaMemcpyAsync(Fragments.GetData(), NewFragments.GetData(), Num * sizeof(uint64), cudaMemcpyDeviceToDevice);
-			CUDA_SYNCHRONIZE_STREAM();
+			check(Keys.Current() == Fragments.GetData());
+			std::swap(Fragments, NewFragments);
 		}
 	}
+
+	// Sorted data is in NewFragments
 
 	int32 NumUnique;
 	{
@@ -76,9 +77,9 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::SortFragmentsAndRemoveDup
 		
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes;
-		CUDA_CHECKED_CALL cub::DeviceSelect2::Unique(TempStorage, TempStorageBytes, Fragments.GetData(), NewFragments.GetData(), NumUniqueGPU.GetPtr(), Num, EqualityLambda);
+		CUDA_CHECKED_CALL cub::DeviceSelect2::Unique(TempStorage, TempStorageBytes, NewFragments.GetData(), Fragments.GetData(), NumUniqueGPU.GetPtr(), Num, EqualityLambda);
 		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
-		CUDA_CHECKED_CALL cub::DeviceSelect2::Unique(TempStorage, TempStorageBytes, Fragments.GetData(), NewFragments.GetData(), NumUniqueGPU.GetPtr(), Num, EqualityLambda);
+		CUDA_CHECKED_CALL cub::DeviceSelect2::Unique(TempStorage, TempStorageBytes, NewFragments.GetData(), Fragments.GetData(), NumUniqueGPU.GetPtr(), Num, EqualityLambda);
 		CUDA_CHECK_ERROR();
 		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
 
@@ -86,34 +87,30 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::SortFragmentsAndRemoveDup
 	}
 	checkInf(NumUnique, Fragments.Num());
 
+	// Unique data is in Fragments
+
 	// Shrink
-#if 0
-	CUDA_CHECKED_CALL cudaMemcpyAsync(Fragments.GetData(), NewFragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
-	CUDA_SYNCHRONIZE_STREAM();
 	NewFragments.Free();
-	NewFragments = TStaticArray<uint64, EMemoryType::GPU>("Fragments", NumUnique);
+	NewFragments = TGpuArray<uint64>("Fragments", NumUnique);
 	CUDA_CHECKED_CALL cudaMemcpyAsync(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	CUDA_SYNCHRONIZE_STREAM();
-#else
-	const auto New = TStaticArray<uint64, EMemoryType::GPU>(NewFragments.GetData(), Cast<uint32>(NumUnique));
-	NewFragments.Reset();
-	NewFragments = New;
-#endif
 
+	Fragments.Free();
+	
 	return NewFragments;
 }
 
-TStaticArray<uint32, EMemoryType::GPU> DAGCompression::ExtractColorsAndFixFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments)
+TGpuArray<uint32> DAGCompression::ExtractColorsAndFixFragments(TGpuArray<uint64>& Fragments)
 {
 	PROFILE_FUNCTION();
 
-	auto Colors = TStaticArray<uint32, EMemoryType::GPU>("Colors", Fragments.Num());
+	auto Colors = TGpuArray<uint32>("Colors", Fragments.Num());
 	Transform(Fragments, Colors, [] GPU_LAMBDA (uint64 X) { return X >> 40; });
 	Transform(Fragments, Fragments, [] GPU_LAMBDA (uint64 X) { return X & ((uint64(1) << 40) - 1); });
 	return Colors;
 }
 
-TStaticArray<uint64, EMemoryType::GPU> DAGCompression::ExtractLeavesAndShiftReduceFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments)
+TGpuArray<uint64> DAGCompression::ExtractLeavesAndShiftReduceFragments(TGpuArray<uint64>& Fragments)
 {
 	PROFILE_FUNCTION();
 
@@ -124,8 +121,8 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::ExtractLeavesAndShiftRedu
 	const int32 MinAverageVoxelsPer64Leaf = 1; // TODO higher?
 	// TODO compute exact num?
 	
-	auto NewFragments = TStaticArray<uint64, EMemoryType::GPU>("Fragments", Fragments.Num() / MinAverageVoxelsPer64Leaf);
-	auto Leaves = TStaticArray<uint64, EMemoryType::GPU>("Leaves", Fragments.Num() / MinAverageVoxelsPer64Leaf);
+	auto NewFragments = TGpuArray<uint64>("Fragments", Fragments.Num() / MinAverageVoxelsPer64Leaf);
+	auto Leaves = TGpuArray<uint64>("Leaves", Fragments.Num() / MinAverageVoxelsPer64Leaf);
 	
 	const auto ParentsBits = TransformIterator(Fragments.GetData(), ParentsTransform);
 	const auto LeavesBits = TransformIterator(Fragments.GetData(), LeavesTransform);
@@ -149,12 +146,12 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::ExtractLeavesAndShiftRedu
 	// Note: these copies & allocs could be avoided if we computed the exact number of runs first
 
 	Fragments.Free();
-	Fragments = TStaticArray<uint64, EMemoryType::GPU>("Fragments", NumRuns);
+	Fragments = TGpuArray<uint64>("Fragments", NumRuns);
 	CUDA_CHECKED_CALL cudaMemcpyAsync(Fragments.GetData(), NewFragments.GetData(), NumRuns * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	CUDA_SYNCHRONIZE_STREAM();
 	NewFragments.Free();
 
-	auto ShrunkLeaves = TStaticArray<uint64, EMemoryType::GPU>("Leaves", NumRuns);
+	auto ShrunkLeaves = TGpuArray<uint64>("Leaves", NumRuns);
 	CUDA_CHECKED_CALL cudaMemcpyAsync(ShrunkLeaves.GetData(), Leaves.GetData(), NumRuns * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	CUDA_SYNCHRONIZE_STREAM();
 	Leaves.Free();
@@ -162,21 +159,21 @@ TStaticArray<uint64, EMemoryType::GPU> DAGCompression::ExtractLeavesAndShiftRedu
 	return ShrunkLeaves;
 }
 
-void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryType::GPU>& OutHashesToSortedUniqueHashes)
+void SortLevelImpl(bool IsLeaf, FGpuLevel& Level, TGpuArray<uint32>& OutHashesToSortedUniqueHashes)
 {
 	PROFILE_FUNCTION();
 
+	using namespace DAGCompression;
+	
 	CheckLevelIndices(Level);
 
-	const bool IsLeaf = Level.ChildrenIndices.Num() == 0;
-
 	const int32 NumHashes = Cast<int32>(Level.Hashes.Num());
-	auto SortedHashes = TStaticArray<uint64, EMemoryType::GPU>("SortedHashes", NumHashes);
-	auto SortedHashesToHashes = TStaticArray<uint32, EMemoryType::GPU>("SortedHashesToHashes", NumHashes);
+	auto SortedHashes = TGpuArray<uint64>("SortedHashes", NumHashes);
+	auto SortedHashesToHashes = TGpuArray<uint32>("SortedHashesToHashes", NumHashes);
 
 	{
 		// Need a real array to use CUB sort
-		auto Sequence = TStaticArray<uint32, EMemoryType::GPU>("Sequence", NumHashes);
+		auto Sequence = TGpuArray<uint32>("Sequence", NumHashes);
 		MakeSequence(Sequence);
 
 		cub::DoubleBuffer<uint64> Keys(Level.Hashes.GetData(), SortedHashes.GetData());
@@ -207,10 +204,10 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 	}
 	CheckIsSorted(SortedHashes);
 
-	auto SortedHashesFlags = TStaticArray<uint32, EMemoryType::GPU>("SortedHashesFlags", NumHashes);
+	auto SortedHashesFlags = TGpuArray<uint32>("SortedHashesFlags", NumHashes);
 	AdjacentDifference(SortedHashes, SortedHashesFlags, thrust::not_equal_to<uint64>(), 0u);
 
-	auto SortedHashesToUniqueHashes = TStaticArray<uint32, EMemoryType::GPU>("SortedHashesToUniqueHashes", NumHashes);
+	auto SortedHashesToUniqueHashes = TGpuArray<uint32>("SortedHashesToUniqueHashes", NumHashes);
 	{
 		void* TempStorage = nullptr;
 		size_t TempStorageBytes;
@@ -224,12 +221,12 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 	
 	const uint32 NumUniques = GetElement(SortedHashesToUniqueHashes, SortedHashesToUniqueHashes.Num() - 1) + 1;
 
-	Level.Hashes = TStaticArray<uint64, EMemoryType::GPU>(IsLeaf ? "Leaves" : "Hashes", NumUniques);
+	Level.Hashes = TGpuArray<uint64>(IsLeaf ? "Leaves" : "Hashes", NumUniques);
 	Scatter(SortedHashes, SortedHashesToUniqueHashes, Level.Hashes);
 	SortedHashes.Free();
 	CheckIsSorted(Level.Hashes);
 
-	OutHashesToSortedUniqueHashes = TStaticArray<uint32, EMemoryType::GPU>("HashesToSortedUniqueHashes", NumHashes);
+	OutHashesToSortedUniqueHashes = TGpuArray<uint32>("HashesToSortedUniqueHashes", NumHashes);
 	Scatter(SortedHashesToUniqueHashes, SortedHashesToHashes, OutHashesToSortedUniqueHashes);
 	CheckArrayBounds(OutHashesToSortedUniqueHashes, 0u, NumUniques - 1);
 	SortedHashesToHashes.Free();
@@ -238,13 +235,13 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 	if (!IsLeaf)
 	{
 		{
-			auto NewChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::GPU>("ChildrenIndices", NumUniques);
+			auto NewChildrenIndices = TGpuArray<FChildrenIndices>("ChildrenIndices", NumUniques);
 			Scatter(Level.ChildrenIndices, OutHashesToSortedUniqueHashes, NewChildrenIndices);
 			Level.ChildrenIndices.Free();
 			Level.ChildrenIndices = NewChildrenIndices;
 		}
 		{
-			auto NewChildMasks = TStaticArray<uint8, EMemoryType::GPU>("ChildMasks", NumUniques);
+			auto NewChildMasks = TGpuArray<uint8>("ChildMasks", NumUniques);
 			Scatter(Level.ChildMasks, OutHashesToSortedUniqueHashes, NewChildMasks);
 			Level.ChildMasks.Free();
 			Level.ChildMasks = NewChildMasks;
@@ -254,7 +251,20 @@ void DAGCompression::SortLevel(FGpuLevel& Level, TStaticArray<uint32, EMemoryTyp
 	CheckLevelIndices(Level);
 }
 
-FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TStaticArray<uint64, EMemoryType::GPU>& Fragments, const TStaticArray<uint32, EMemoryType::GPU>& FragmentIndicesToChildrenIndices)
+void DAGCompression::SortLeaves(TGpuArray<uint64>& Leaves, TGpuArray<uint32>& OutHashesToSortedUniqueHashes)
+{
+	FGpuLevel Level;
+	Level.Hashes = std::move(Leaves);
+	SortLevelImpl(true, Level, OutHashesToSortedUniqueHashes);
+	Leaves = Level.Hashes;
+}
+
+void DAGCompression::SortLevel(FGpuLevel& Level, TGpuArray<uint32>& OutHashesToSortedUniqueHashes)
+{
+	SortLevelImpl(false, Level, OutHashesToSortedUniqueHashes);
+}
+
+FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>& Fragments, const TGpuArray<uint32>& FragmentIndicesToChildrenIndices)
 {
 	PROFILE_FUNCTION();
 
@@ -268,9 +278,9 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TStaticArray<uint6
 	// First create the mapping & get the number of unique parents
 	int32 NumUniqueParents;
 	{
-		auto UniqueParentsSum = TStaticArray<uint32, EMemoryType::GPU>("UniqueParentsSum", Num);
+		auto UniqueParentsSum = TGpuArray<uint32>("UniqueParentsSum", Num);
 		{
-			auto UniqueParentsFlags = TStaticArray<uint32, EMemoryType::GPU>("UniqueParentsFlags", Num);
+			auto UniqueParentsFlags = TGpuArray<uint32>("UniqueParentsFlags", Num);
 			AdjacentDifferenceWithTransform(Fragments, ParentsTransform, UniqueParentsFlags, thrust::not_equal_to<uint64>(), 0u);
 			{
 				void* TempStorage = nullptr;
@@ -287,7 +297,7 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TStaticArray<uint6
 		NumUniqueParents = GetElement(UniqueParentsSum, UniqueParentsSum.Num() - 1) + 1;
 		checkInfEqual(NumUniqueParents, Num);
 
-		OutLevel.ChildrenIndices = TStaticArray<FChildrenIndices, EMemoryType::GPU>("ChildrenIndices", NumUniqueParents);
+		OutLevel.ChildrenIndices = TGpuArray<FChildrenIndices>("ChildrenIndices", NumUniqueParents);
 		OutLevel.ChildrenIndices.MemSet(0xFF);
 		{
 			const auto CompactChildrenToExpandedChildren = [=] GPU_LAMBDA(uint64 Index) { return (Fragments[Index] & 0b111) + 8 * UniqueParentsSum[Index]; };
@@ -298,8 +308,8 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TStaticArray<uint6
 		UniqueParentsSum.Free();
 	}
 
-	auto NewFragments = TStaticArray<uint64, EMemoryType::GPU>("Fragments", NumUniqueParents);
-	OutLevel.ChildMasks = TStaticArray<uint8, EMemoryType::GPU>("ChildMasks", NumUniqueParents);
+	auto NewFragments = TGpuArray<uint64>("Fragments", NumUniqueParents);
+	OutLevel.ChildMasks = TGpuArray<uint8>("ChildMasks", NumUniqueParents);
 	{
 		const auto ParentsBits = TransformIterator(Fragments.GetData(), ParentsTransform);
 		const auto ChildrenBits = TransformIterator(Fragments.GetData(), ChildrenTransform);
@@ -324,7 +334,7 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TStaticArray<uint6
 	return OutLevel;
 }
 
-FCpuDag DAGCompression::CreateSubDAG(TStaticArray<uint64, EMemoryType::GPU>& InFragments)
+FCpuDag DAGCompression::CreateSubDAG(TGpuArray<uint64>& InFragments)
 {
 	PROFILE_FUNCTION();
 	
@@ -335,8 +345,15 @@ FCpuDag DAGCompression::CreateSubDAG(TStaticArray<uint64, EMemoryType::GPU>& InF
 	{
 		return CpuDag;
 	}
-	
-	auto Fragments = SortFragmentsAndRemoveDuplicates(InFragments);
+
+	TGpuArray<uint64> Fragments;
+
+	{
+		auto InFragmentsCopy = TGpuArray<uint64>("FragmentsCopy", InFragments.Num());
+		CUDA_CHECKED_CALL cudaMemcpyAsync(InFragmentsCopy.GetData(), InFragments.GetData(), InFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
+		CUDA_SYNCHRONIZE_STREAM();
+		Fragments = SortFragmentsAndRemoveDuplicates(std::move(InFragmentsCopy));
+	}
 	
 #if ENABLE_COLORS
 	auto Colors = ExtractColorsAndFixFragments(Fragments);
@@ -346,13 +363,8 @@ FCpuDag DAGCompression::CreateSubDAG(TStaticArray<uint64, EMemoryType::GPU>& InF
 
 	auto Leaves = ExtractLeavesAndShiftReduceFragments(Fragments);
 
-	TStaticArray<uint32, EMemoryType::GPU> FragmentIndicesToChildrenIndices;
-	{
-		FGpuLevel Level;
-		Level.Hashes = std::move(Leaves);
-		SortLevel(Level, FragmentIndicesToChildrenIndices);
-		Leaves = Level.Hashes;
-	}
+	TGpuArray<uint32> FragmentIndicesToChildrenIndices;
+	SortLeaves(Leaves, FragmentIndicesToChildrenIndices);
 	CpuDag.Leaves = Leaves.CreateCPU();
 	
 	auto PreviousLevelHashes = Leaves;
