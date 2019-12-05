@@ -118,10 +118,12 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 	const auto AABBs = GetAABBs(AABB);
 
 	std::atomic<uint32> SubDagIndex = 0;
-	
+
+#if ENABLE_COLORS
 	std::vector<TCpuArray<uint32>> SubDagColors(AABBs.size());
 	std::condition_variable SubDagColorsFence;
 	std::atomic<bool> SubDagColorsFinished{ false };
+#endif
 	
 	using FFragments = TGpuArray<uint64>;
 	
@@ -167,6 +169,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 
 	const auto ExtractColorsThreadOutput = [&](uint32 Index, FFragments Fragments)
 	{
+#if ENABLE_COLORS
 		if (Fragments.Num() > 0)
 		{
 			auto Colors = ExtractColorsAndFixFragments(Fragments);
@@ -179,7 +182,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 			SubDagColorsFinished = true;
 			SubDagColorsFence.notify_all();
 		}
-		
+#endif
 		return Fragments;
 	};
 	TIndexedThread<FFragments, FFragments> ExtractColorsThread(
@@ -210,7 +213,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 		ExtractAndSortLeavesThreadOutput,
 		1);
 	
-	const auto ExtractSubDagThreadOutput = [](uint32 Index, FLeavesFragments LeavesFragments)
+	const auto ExtractSubDagThreadOutput = [&AABBs](uint32 Index, FLeavesFragments LeavesFragments)
 	{
 		auto& Fragments = LeavesFragments.Fragments;
 		const auto& Leaves = LeavesFragments.Leaves;
@@ -244,6 +247,8 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 
 		FragmentIndicesToChildrenIndices.Free();
 		Fragments.Free();
+
+		LOG("Subdag %u/%u done", Index + 1, uint32(AABBs.size()));
 		
 		return CpuDag;
 	};

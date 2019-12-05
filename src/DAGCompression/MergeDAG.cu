@@ -79,17 +79,17 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 
 	if (A.Leaves.Num() == 0)
 	{
-		for (auto& Level : A.Levels) check(Level.Hashes.Num() == 0);
+		for (auto& Level : A.Levels) { (void)Level; check(Level.Hashes.Num() == 0); }
 		return B;
 	}
 	if (B.Leaves.Num() == 0)
 	{
-		for (auto& Level : B.Levels) check(Level.Hashes.Num() == 0);
+		for (auto& Level : B.Levels) { (void)Level; check(Level.Hashes.Num() == 0); }
 		return A;
 	}
 
-	for (auto& Level : A.Levels) check(Level.Hashes.Num() != 0);
-	for (auto& Level : B.Levels) check(Level.Hashes.Num() != 0);
+	for (auto& Level : A.Levels) { (void)Level; check(Level.Hashes.Num() != 0); }
+	for (auto& Level : B.Levels) { (void)Level; check(Level.Hashes.Num() != 0); }
 
 	const int32 NumLevels = int32(A.Levels.size());
 	
@@ -264,13 +264,15 @@ std::thread DAGCompression::MergeColors(std::vector<TCpuArray<uint32>> Colors, T
 FCpuDag DAGCompression::MergeDAGs(std::vector<FCpuDag> CpuDags)
 {
 	PROFILE_FUNCTION();
-	
+
+#if ENABLE_CHECKS
 	check(Utils::IsPowerOf2(CpuDags.size()));
 	const int32 NumLevels = int32(CpuDags[0].Levels.size());
 	for (auto& CpuDag : CpuDags)
 	{
 		checkEqual(CpuDag.Levels.size(), NumLevels);
 	}
+#endif
 
 #if ENABLE_COLORS
 	TCpuArray<uint32> MergedColors;

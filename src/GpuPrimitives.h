@@ -100,6 +100,7 @@ inline void CheckFunctionBoundsIf(
 	(void)Condition;
 	(void)MinInput;
 	(void)MaxInput;
+	(void)MinOutput;
 	(void)MaxOutput;
 #if ENABLE_CHECKS
 	const auto Check = [=] GPU_LAMBDA (TIn Value)
@@ -129,7 +130,7 @@ inline void CheckFunctionBounds(
 template<typename T>
 inline void CheckArrayBounds(const TGpuArray<T>& Array, T Min, T Max)
 {
-	CheckFunctionBounds<uint64, T>([=] GPU_LAMBDA (uint64 Index) { return Array[Index]; }, 0, Array.Num() - 1, Min, Max);
+	CheckFunctionBounds<uint64, T>(Array, 0, Array.Num() - 1, Min, Max);
 }
 
 template<typename TDataPred, typename TIn, typename F, typename FCondition>
@@ -528,11 +529,13 @@ inline void MergePairs(
 
 		void* alloc(size_t size, mgpu::memory_space_t space) override
 		{
+			(void)space;
 			check(space == mgpu::memory_space_device);
 			return FMemory::Malloc<uint8>("mgpu", size, EMemoryType::GPU);
 		}
 		void free(void* p, mgpu::memory_space_t space) override
 		{
+			(void)space;
 			check(space == mgpu::memory_space_device);
 			FMemory::Free(p);
 		}

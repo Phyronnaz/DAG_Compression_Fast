@@ -104,7 +104,7 @@ public:
 				return Results.size() >= Count;
 			};
 			std::unique_lock<std::mutex> Lock(ProcessFinishedMutex);
-			ProcessFinished.wait(Lock, NeedToWakeup);
+			while (!NeedToWakeup()) ProcessFinished.wait_for(Lock, std::chrono::milliseconds(1));
 		}
 		return Result;
 	}
@@ -160,7 +160,7 @@ private:
 				};
 				PROFILE_SCOPE_COLOR(COLOR_YELLOW, "Wait");
 				std::unique_lock<std::mutex> Lock(ProcessWakeupMutex);
-				ProcessWakeup.wait(Lock, ShouldWakeup);
+				while (!ShouldWakeup()) ProcessWakeup.wait_for(Lock, std::chrono::milliseconds(1));
 			}
 			else
 			{

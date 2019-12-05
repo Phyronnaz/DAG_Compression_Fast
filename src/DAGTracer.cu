@@ -185,7 +185,8 @@ struct FColors
 {
 	TGpuArray<uint32> colors;
 	TGpuArray<uint64> enclosedLeaves;
-
+	
+#if ENABLE_COLORS
 	HOST_DEVICE uint64 get_leaves_count(uint32 level, uint32 node) const
 	{
 		const uint32 upperBits = node >> 8;
@@ -205,6 +206,7 @@ struct FColors
 	{
 		return colors[leafIndex];
 	}
+#endif
 };
 
 template<bool isRoot>
@@ -446,7 +448,8 @@ __global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, cons
 			}
 		}
 	}
-
+	
+#if ENABLE_COLORS
 	uint64 nof_leaves = 0;
 	{
 		uint32 level = 0;
@@ -511,27 +514,30 @@ __global__ void trace_paths(const FDAGTracer::TracePathsParams traceParams, cons
 			}
 		}
 	}
-
+#endif
+	
 	const auto p = path.path;
 
-	uint32 color;
+	uint32 color = 0;
+#if ENABLE_COLORS
 	if (traceParams.DebugLevel == 0xFFFFFFFC)
 	{
 		color = nof_leaves;
 	}
-	else if (traceParams.DebugLevel == 0xFFFFFFFD)
+	if (traceParams.DebugLevel == 0xFFFFFFFD)
 	{
 		color = nof_leaves == uint64(-1) ? 0 : colors.get_color(nof_leaves);
 	}
-	else if (traceParams.DebugLevel == 0xFFFFFFFE)
+#endif
+	if (traceParams.DebugLevel == 0xFFFFFFFE)
 	{
 		color = Utils::MurmurHash64(cachedLeaf.to_64());
 	}
-	else if (traceParams.DebugLevel == 0xFFFFFFFF)
+	if (traceParams.DebugLevel == 0xFFFFFFFF)
 	{
 		color = float3_to_rgb888(make_float3(p.x & 0xFF, p.y & 0xFF, p.z & 0xFF) / make_float3(0xFF));
 	}
-	else
+	if (0 <= traceParams.DebugLevel && traceParams.DebugLevel < LEVELS)
 	{
 		color = Utils::MurmurHash32(DebugIndex);
 	}

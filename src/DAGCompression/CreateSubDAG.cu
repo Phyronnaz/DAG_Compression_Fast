@@ -85,16 +85,27 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 
 		NumUnique = NumUniqueGPU.GetValue();
 	}
-	checkInf(NumUnique, Fragments.Num());
+	checkInf(0, NumUnique);
+	checkInfEqual(NumUnique, Fragments.Num());
 
 	// Unique data is in Fragments
 
-	// Shrink
-	NewFragments.Free();
-	NewFragments = TGpuArray<uint64>("Fragments", NumUnique);
-	CUDA_CHECKED_CALL cudaMemcpyAsync(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
-	CUDA_SYNCHRONIZE_STREAM();
-
+	// Shrink if less than 95% of original size
+	if (NumUnique < Fragments.Num() * 0.95)
+	{
+		NewFragments.Free();
+		NewFragments = TGpuArray<uint64>("Fragments", NumUnique);
+		CUDA_CHECKED_CALL cudaMemcpyAsync(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
+		CUDA_SYNCHRONIZE_STREAM();
+	}
+	else
+	{
+		std::swap(NewFragments, Fragments);
+		auto Temp = NewFragments;
+		NewFragments.Reset();
+		NewFragments = { Temp.GetData(), uint64(NumUnique) };
+	}
+	
 	Fragments.Free();
 	
 	return NewFragments;

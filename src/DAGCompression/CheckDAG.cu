@@ -88,13 +88,16 @@ uint64 CheckDagImpl(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& Enclo
 
 void DAGCompression::CheckDag(const FFinalDag& FinalDag)
 {
+	(void)FinalDag;
 #if ENABLE_CHECKS
 	PROFILE_FUNCTION();
 
 	auto CpuDagCopy = FinalDag.Dag.CreateCPU();
 	auto CpuEnclosedLeavesCopy = FinalDag.EnclosedLeaves.CreateCPU();
 	const uint64 NumLeaves = CheckDag(CpuDagCopy, CpuEnclosedLeavesCopy);
+#if ENABLE_COLORS
 	checkEqual(NumLeaves, FinalDag.Colors.Num());
+#endif
 	CpuDagCopy.Free();
 	CpuEnclosedLeavesCopy.Free();
 #endif
@@ -102,6 +105,8 @@ void DAGCompression::CheckDag(const FFinalDag& FinalDag)
 
 uint64 DAGCompression::CheckDag(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& EnclosedLeaves)
 {
+	(void)Dag;
+	(void)EnclosedLeaves;
 #if ENABLE_CHECKS
 	return CheckDagImpl(Dag, EnclosedLeaves, 0, 0);
 #else
