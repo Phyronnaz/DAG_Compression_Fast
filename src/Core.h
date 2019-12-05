@@ -315,6 +315,10 @@ struct FNVExtScope
 #define PROFILE_SCOPE_COLOR(Color, Format, ...) PROFILE_SCOPE_COLOR_NV(Color, Format, ##__VA_ARGS__); PROFILE_SCOPE_COLOR_TRACY(Color, Format, ##__VA_ARGS__);
 #define PROFILE_SCOPE(Format, ...) PROFILE_SCOPE_COLOR_NV(COLOR_RED, Format, ##__VA_ARGS__); PROFILE_SCOPE_COLOR_TRACY(COLOR_BLACK, Format, ##__VA_ARGS__);
 
+#define PROFILE_SCOPE_TRACY(Format, ...) PROFILE_SCOPE_COLOR_TRACY(COLOR_BLACK, Format, ##__VA_ARGS__);
+#define PROFILE_FUNCTION_TRACY() PROFILE_SCOPE_TRACY(__FUNCTION__);
+#define PROFILE_FUNCTION_COLOR_TRACY(Color) PROFILE_SCOPE_COLOR_TRACY(Color, __FUNCTION__);
+
 #define PROFILE_FUNCTION_COLOR(Color) PROFILE_SCOPE_COLOR(Color, __FUNCTION__);
 #define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__);
 
@@ -328,23 +332,25 @@ struct FNVExtScope
 using FScopeLock = std::lock_guard<LockableBase(std::mutex)>;
 using FUniqueLock = std::unique_lock<LockableBase(std::mutex)>;
 
-#define DEFAULT_STREAM cudaStream_t(0)
+#define DEFAULT_STREAM GetDefaultStream()
+
+#define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
+#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize();
+#define CUDA_CHECK_LAST_ERROR() CUDA_CHECKED_CALL cudaGetLastError()
+
+inline auto GetDefaultStream()
+{
+	thread_local cudaStream_t Stream = nullptr;
+	if (!Stream)
+	{
+		CUDA_CHECKED_CALL cudaStreamCreate(&Stream);
+	}
+	check(Stream);
+	return Stream;
+}
 
 inline auto StreamSynchronize()
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 	return cudaStreamSynchronize(DEFAULT_STREAM);
 }
-
-#define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
-#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize()
-#define CUDA_CHECK_ERROR_ALWAYS() \
-	{ \
-		CUDA_SYNCHRONIZE_STREAM(); \
-		CUDA_CHECKED_CALL cudaGetLastError(); \
-	}
-#if ENABLE_CHECKS
-#define CUDA_CHECK_ERROR() CUDA_CHECK_ERROR_ALWAYS()
-#else
-#define CUDA_CHECK_ERROR()
-#endif

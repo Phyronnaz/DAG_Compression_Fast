@@ -38,8 +38,8 @@ inline void DAGCompression::CheckLevelIndices(const T& Level)
 	if (ChildrenIndices.GetMemoryType() == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
 	{
 		const auto It = thrust::make_counting_iterator<uint64>(0);
-		thrust::for_each(ExecutionPolicy, It, It + ChildrenIndices.Num(), Check);
-		CUDA_CHECK_ERROR();
+		thrust::for_each(GetExecutionPolicy(), It, It + ChildrenIndices.Num(), Check);
+		CUDA_CHECK_LAST_ERROR();
 	}
 	else
 	{
@@ -61,25 +61,24 @@ uint64 CheckDagImpl(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& Enclo
 {
 	if (Level == LEVELS - 2)
 	{
-		return Utils::Popc(Dag[Index + 0]) + Utils::Popc(Dag[Index + 1]);
+		return Utils::Popc(Dag.CheckedAt(Index + 0)) + Utils::Popc(Dag.CheckedAt(Index + 1));
 	}
 	else
 	{
-		const uint32 ChildMask = Utils::ChildMask(Dag[Index]);
-		checkInf(ChildMask, 256);
+		const uint8 ChildMask = Utils::ChildMask(Dag.CheckedAt(Index));
 		uint64 Count = 0;
 		for (uint32 ChildIndex = 0; ChildIndex < Utils::Popc(ChildMask); ChildIndex++)
 		{
-			Count += CheckDagImpl(Dag, EnclosedLeaves, Dag[Index + 1 + ChildIndex], Level + 1);
+			Count += CheckDagImpl(Dag, EnclosedLeaves, Dag.CheckedAt(Index + 1 + ChildIndex), Level + 1);
 		}
 #if ENABLE_COLORS
 		if (Level < TOP_LEVEL)
 		{
-			checkEqual(Count, EnclosedLeaves[Dag[Index] >> 8]);
+			checkAlways(Count == EnclosedLeaves.CheckedAt(Dag.CheckedAt(Index) >> 8));
 		}
 		else
 		{
-			checkEqual(Count, Dag[Index] >> 8);
+			checkAlways(Count == (Dag.CheckedAt(Index) >> 8));
 		}
 #endif
 		return Count;
@@ -88,28 +87,20 @@ uint64 CheckDagImpl(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& Enclo
 
 void DAGCompression::CheckDag(const FFinalDag& FinalDag)
 {
-	(void)FinalDag;
-#if ENABLE_CHECKS
 	PROFILE_FUNCTION();
 
 	auto CpuDagCopy = FinalDag.Dag.CreateCPU();
 	auto CpuEnclosedLeavesCopy = FinalDag.EnclosedLeaves.CreateCPU();
 	const uint64 NumLeaves = CheckDag(CpuDagCopy, CpuEnclosedLeavesCopy);
+	(void)NumLeaves;
 #if ENABLE_COLORS
-	checkEqual(NumLeaves, FinalDag.Colors.Num());
+	checkAlways(NumLeaves == FinalDag.Colors.Num());
 #endif
 	CpuDagCopy.Free();
 	CpuEnclosedLeavesCopy.Free();
-#endif
 }
 
 uint64 DAGCompression::CheckDag(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& EnclosedLeaves)
 {
-	(void)Dag;
-	(void)EnclosedLeaves;
-#if ENABLE_CHECKS
 	return CheckDagImpl(Dag, EnclosedLeaves, 0, 0);
-#else
-	return 0;
-#endif
 }

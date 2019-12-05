@@ -105,7 +105,6 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	LOG("Peak CPU memory usage: %f MB", Utils::ToMB(FMemory::GetCpuMaxAllocatedMemory()));
 	LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
 
-	CheckDag(FinalDag);
 	return FinalDag;
 }
 
@@ -278,7 +277,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 			"4 - ExtractSubDagThread",
 			GetResultLambda_Prefetch<4>(ExtractAndSortLeavesThread, AABBs.size()),
 			ExtractSubDagThreadOutput,
-			2);
+			4);
 
 		using FDagChildren = TStaticArray<FCpuDag, 8>;
 		std::vector<std::unique_ptr<TIndexedThread<FDagChildren, FCpuDag>>> MergeThreads(LEVELS - SUBDAG_LEVELS);
@@ -407,8 +406,6 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 	LOG("Peak CPU memory usage: %f MB", Utils::ToMB(FMemory::GetCpuMaxAllocatedMemory()));
 	LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
 
-	CheckDag(FinalDag);
-	
 	MakeContextCurrent(MainWindow);
 	return FinalDag;
 }

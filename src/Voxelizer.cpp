@@ -316,7 +316,7 @@ TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 
 void FVoxelizer::Draw() const
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 	
 	for (const auto& NodeToRender : NodesToRender) 
 	{

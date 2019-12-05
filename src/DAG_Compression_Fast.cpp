@@ -7,6 +7,10 @@
 
 int main()
 {
+	cudaDeviceProp Props{};
+	CUDA_CHECKED_CALL cudaGetDeviceProperties(&Props, 0);
+	LOG("CUDA: %d Async Engine", Props.asyncEngineCount);
+	
 	FEngine Engine;
 	Engine.Init();
 	
@@ -64,16 +68,11 @@ int main()
 #endif
 		MARK("Compression End");
 
+		DAGCompression::CheckDag(Dag);
+
 		std::cout << FMemory::GetStatsString();
 		
 		FreeScene(Scene);
-
-#if 0
-		Dag.Dag.Free();
-		Dag.Colors.Free();
-		Dag.EnclosedLeaves.Free();
-		return 0;
-#endif
 	}
 #else
 	FFileReader Reader("C:/ROOT/DAG_Compression/cache/result.basic_dag.dag.bin");
@@ -95,7 +94,9 @@ int main()
 	Dag = DagCpu.CreateGPU();
 #endif
 
+#if 0
 	Engine.Loop(AABB, Dag);
+#endif
 	
 	Dag.Dag.Free();
 	Dag.Colors.Free();

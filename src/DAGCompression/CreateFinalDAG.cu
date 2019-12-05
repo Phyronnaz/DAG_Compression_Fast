@@ -12,14 +12,11 @@ uint32 ComputeChildPositions(const FGpuLevel& Level, TGpuArray<uint32>& ChildPos
 	const auto NodeSizes = thrust::make_transform_iterator(Level.ChildMasks.GetData(),  [] GPU_LAMBDA (uint8 ChildMask) { return Utils::TotalSize(ChildMask); });
 
 	{
-		CUDA_SYNCHRONIZE_STREAM();
-		void* TempStorage = nullptr;
-		size_t TempStorageBytes;
-		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(TempStorage, TempStorageBytes, NodeSizes, ChildPositions.GetData(), Num);
-		CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
-		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(TempStorage, TempStorageBytes, NodeSizes, ChildPositions.GetData(), Num);
-		CUDA_SYNCHRONIZE_STREAM();
-		CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
+		FTempStorage Storage;
+		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(Storage.Ptr, Storage.Bytes, NodeSizes, ChildPositions.GetData(), Num, DEFAULT_STREAM);
+		Storage.Allocate();
+		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(Storage.Ptr, Storage.Bytes, NodeSizes, ChildPositions.GetData(), Num, DEFAULT_STREAM);
+		Storage.SyncAndFree();
 	}
 	
 	return GetElement(ChildPositions, Num - 1) + Utils::TotalSize(GetElement(Level.ChildMasks, Num - 1));
@@ -198,6 +195,7 @@ void SetLeavesCountsCpu(FFinalDag& Dag)
 FFinalDag DAGCompression::CreateFinalDAG(FCpuDag CpuDag)
 {
 	PROFILE_FUNCTION();
+	CUDA_CHECK_LAST_ERROR();
 
 	checkfAlways(CpuDag.Levels[0].Hashes.Num() > 0, "Empty Dag!");
 	
@@ -279,6 +277,7 @@ FFinalDag DAGCompression::CreateFinalDAG(FCpuDag CpuDag)
 	}
 #endif
 
-	CheckDag(FinalDag);
+	CUDA_SYNCHRONIZE_STREAM();
+
 	return FinalDag;
 }

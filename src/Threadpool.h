@@ -94,7 +94,7 @@ public:
 	}
 	void Enqueue(FTask Task)
 	{
-		PROFILE_FUNCTION();
+		PROFILE_FUNCTION_TRACY();
 
 		Tasks.Enqueue(std::move(Task));
 		OnEnqueue.notify_all();

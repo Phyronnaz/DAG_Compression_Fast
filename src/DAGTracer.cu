@@ -550,7 +550,7 @@ void FDAGTracer::ResolvePaths(
 	const TGpuArray<uint32>& Colors,
 	const TGpuArray<uint64>& EnclosedLeaves)
 {
-	CUDA_CHECK_ERROR_ALWAYS();
+	CUDA_CHECK_LAST_ERROR();
 
 	ColorsBuffer.MapSurface();
 	
@@ -559,8 +559,8 @@ void FDAGTracer::ResolvePaths(
 	
 	trace_paths <<< grid_dim, block_dim >>> (Params, { Dag }, { Colors, EnclosedLeaves }, ColorsBuffer.CudaSurface);
 
-	CUDA_SYNCHRONIZE_STREAM();
-	CUDA_CHECK_ERROR_ALWAYS();
+	CUDA_CHECKED_CALL cudaDeviceSynchronize();
+	CUDA_CHECK_LAST_ERROR();
 	
 	ColorsBuffer.UnmapSurface();
 }

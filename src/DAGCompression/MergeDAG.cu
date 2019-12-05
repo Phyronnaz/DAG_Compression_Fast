@@ -8,8 +8,7 @@ inline uint32 Merge(
 	TGpuArray<uint32>& OutIndicesAToMergedIndices,
 	TGpuArray<uint32>& OutIndicesBToMergedIndices)
 {
-	PROFILE_FUNCTION();
-	CUDA_SYNCHRONIZE_STREAM();
+	PROFILE_FUNCTION_TRACY();
 
 	check(!OutIndicesAToMergedIndices.IsValid());
 	check(!OutIndicesBToMergedIndices.IsValid());
@@ -35,14 +34,11 @@ inline uint32 Merge(
 		auto UniqueFlags = TGpuArray<uint32>("UniqueFlags", NumToMerge);
 		AdjacentDifference(KeysAB, UniqueFlags, thrust::not_equal_to<uint64>(), 0u);
 		{
-			CUDA_SYNCHRONIZE_STREAM();
-			void* TempStorage = nullptr;
-			size_t TempStorageBytes;
-			CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(TempStorage, TempStorageBytes, UniqueFlags.GetData(), UniqueSum.GetData(), NumToMerge);
-			CUDA_CHECKED_CALL cnmemMalloc(&TempStorage, TempStorageBytes, DEFAULT_STREAM);
-			CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(TempStorage, TempStorageBytes, UniqueFlags.GetData(), UniqueSum.GetData(), NumToMerge);
-			CUDA_SYNCHRONIZE_STREAM();
-			CUDA_CHECKED_CALL cnmemFree(TempStorage, DEFAULT_STREAM);
+			FTempStorage Storage;
+			CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(Storage.Ptr, Storage.Bytes, UniqueFlags.GetData(), UniqueSum.GetData(), NumToMerge, DEFAULT_STREAM);
+			Storage.Allocate();
+			CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(Storage.Ptr, Storage.Bytes, UniqueFlags.GetData(), UniqueSum.GetData(), NumToMerge, DEFAULT_STREAM);
+			Storage.SyncAndFree();
 		}
 		UniqueFlags.Free();
 	}

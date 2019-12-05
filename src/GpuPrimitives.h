@@ -22,10 +22,18 @@
 #include "moderngpu/kernel_merge.hxx"
 
 #if DEBUG_THRUST
-struct my_policy : thrust::system::cpp::execution_policy<my_policy> {};
-static auto ExecutionPolicy = my_policy();
+inline auto GetExecutionPolicy()
+{
+	struct my_policy : thrust::system::cpp::execution_policy<my_policy> {};
+	static auto ExecutionPolicy = my_policy();
+	return ExecutionPolicy;
+}
 #else
-static auto ExecutionPolicy = thrust::cuda::par.on(0);
+inline auto GetExecutionPolicy()
+{
+	thread_local const auto ExecutionPolicy = thrust::cuda::par.on(DEFAULT_STREAM);
+	return ExecutionPolicy;
+}
 #endif
 
 template<typename T, typename F>
@@ -41,6 +49,7 @@ inline void CheckEqual(const TFixedArray<T, MemoryType>& ArrayA, const TFixedArr
 	(void)ArrayA;
 	(void)ArrayB;
 #if ENABLE_CHECKS
+	CUDA_CHECK_LAST_ERROR();
 	checkEqual(ArrayA.Num(), ArrayB.Num());
 	const auto Check = [=] GPU_LAMBDA (uint64 Index)
 	{
@@ -49,8 +58,8 @@ inline void CheckEqual(const TFixedArray<T, MemoryType>& ArrayA, const TFixedArr
 	if (MemoryType == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
 	{
 		const auto It = thrust::make_counting_iterator<uint64>(0);
-		thrust::for_each(ExecutionPolicy, It, It + ArrayA.Num(), Check);
-		CUDA_CHECK_ERROR();
+		thrust::for_each(GetExecutionPolicy(), It, It + ArrayA.Num(), Check);
+		CUDA_CHECK_LAST_ERROR();
 	}
 	else
 	{
@@ -67,16 +76,16 @@ inline void CheckIsSorted(const TFixedArray<T, MemoryType>& Array)
 {
 	(void)Array;
 #if ENABLE_CHECKS
-	CUDA_CHECK_ERROR();
-	const auto Check = [=] GPU_LAMBDA (uint64 Index)
+	CUDA_CHECK_LAST_ERROR();
+	const auto Check = [=] GPU_LAMBDA(uint64 Index)
 	{
 		checkf(Array[Index] <= Array[Index + 1], "%" PRIu64 " <= %" PRIu64 " (Index %" PRIu64 ")", uint64(Array[Index]), uint64(Array[Index + 1]), Index);
 	};
 	if (MemoryType == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
 	{
 		const auto It = thrust::make_counting_iterator<uint64>(0);
-		thrust::for_each(ExecutionPolicy, It, It + Array.Num() - 1, Check);
-		CUDA_CHECK_ERROR();
+		thrust::for_each(GetExecutionPolicy(), It, It + Array.Num() - 1, Check);
+		CUDA_CHECK_LAST_ERROR();
 	}
 	else
 	{
@@ -104,8 +113,8 @@ inline void CheckFunctionBoundsIf(
 	(void)MinOutput;
 	(void)MaxOutput;
 #if ENABLE_CHECKS
-	CUDA_CHECK_ERROR();
-	const auto Check = [=] GPU_LAMBDA (TIn Value)
+	CUDA_CHECK_LAST_ERROR();
+	const auto Check = [=] GPU_LAMBDA(TIn Value)
 	{
 		if (!Condition(Value)) return;
 		const TOut Output = Function(Value);
@@ -113,8 +122,8 @@ inline void CheckFunctionBoundsIf(
 		checkf(Output <= MaxOutput, "%" PRIi64 " <= %" PRIi64, int64(Output), int64(MaxOutput));
 	};
 	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
-	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Check);
-	CUDA_CHECK_ERROR();
+	thrust::for_each(GetExecutionPolicy(), It, It + MaxInput - MinInput, Check);
+	CUDA_CHECK_LAST_ERROR();
 #endif
 }
 
@@ -151,21 +160,21 @@ inline void CheckFunctionIsInjectiveIf(
 	(void)MaxInput;
 	(void)NumOutputs;
 #if ENABLE_CHECKS
-	CUDA_CHECK_ERROR();
+	CUDA_CHECK_LAST_ERROR();
 #if 0 // Strict injectivity is probably not needed: we just need to write the same values
 	auto Counters = TGpuArray<uint64>("Counters", NumOutputs);
 	Counters.MemSet(0);
-	
-	const auto Add = [=] GPU_ONLY_LAMBDA (TIn Value)
+
+	const auto Add = [=] GPU_ONLY_LAMBDA(TIn Value)
 	{
 		if (!Condition(Value)) return;
 		const uint64 Output = Function(Value);
 		atomicAdd(const_cast<uint64*>(&Counters[Output]), uint64(1));
 	};
 	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
-	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Add);
+	thrust::for_each(GetExecutionPolicy(), It, It + MaxInput - MinInput, Add);
 	CheckArrayBounds(Counters, uint64(0), uint64(1));
-	CUDA_CHECK_ERROR();
+	CUDA_CHECK_LAST_ERROR();
 
 	Counters.Free();
 #else
@@ -206,8 +215,8 @@ inline void CheckFunctionIsInjectiveIf(
 	};
 
 	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
-	thrust::for_each(ExecutionPolicy, It, It + MaxInput - MinInput, Check);
-	CUDA_CHECK_ERROR();
+	thrust::for_each(GetExecutionPolicy(), It, It + MaxInput - MinInput, Check);
+	CUDA_CHECK_LAST_ERROR();
 #else
 	for (TIn Input = MinInput; Input <= MaxInput; Input++)
 	{
@@ -289,6 +298,8 @@ namespace cub
 				cudaStream_t stream = 0,
 				bool debug_synchronous = false)
 		{
+			CUDA_CHECK_LAST_ERROR();
+
 			using namespace cub;
 
 			typedef int                     OffsetT;
@@ -314,13 +325,15 @@ namespace cub
 template<typename T>
 inline void SetElement(TGpuArray<T>& Array, uint64 Index, T Value)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
+	
 	FMemory::SetGPUValue(&Array[Index], Value);
 }
 template<typename T>
 inline T GetElement(const TGpuArray<T>& Array, uint64 Index)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
+	
 	return FMemory::ReadGPUValue(&Array[Index]);
 }
 
@@ -331,22 +344,19 @@ inline void AdjacentDifference(
 	F1 BinaryOp,
 	OutType FirstElement)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	checkEqual(In.Num(), Out.Num())
 
 	thrust::transform(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		In.GetData() + 1,
 		In.GetData() + In.Num(),
 		In.GetData(),
 		Out.GetData() + 1,
 		BinaryOp);
-	CUDA_SYNCHRONIZE_STREAM();
 	
 	SetElement(Out, 0, FirstElement);
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename InType, typename OutType, typename F1, typename F2>
@@ -356,24 +366,20 @@ inline void AdjacentDifferenceWithTransform(
 	F2 BinaryOp,
 	OutType FirstElement)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	checkEqual(In.Num(), Out.Num())
 
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
 	thrust::transform(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		It + 1,
 		It + In.Num(),
 		It,
 		Out.GetData() + 1,
 		BinaryOp);
 	
-	CUDA_SYNCHRONIZE_STREAM();
-	
 	SetElement(Out, 0, FirstElement);
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename MapFunction>
@@ -382,20 +388,18 @@ inline void ScatterPred(
 	MapFunction Map,
 	TGpuArray<TypeOut>& Out)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	CheckFunctionBounds(Map, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjective(In, Map, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	thrust::scatter(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		MapTransform,
 		Out.GetData());
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename IndexType>
@@ -404,19 +408,17 @@ inline void Scatter(
 	const TGpuArray<IndexType>& Map,
 	TGpuArray<TypeOut>& Out)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	CheckArrayBounds(Map, IndexType(0), IndexType(Out.Num() - 1));
 	CheckArrayIsInjective(In, Map, Out.Num());
 	
 	thrust::scatter(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		Map.GetData(),
 		Out.GetData());
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename InF, typename IndexType>
@@ -425,7 +427,7 @@ inline void ScatterWithTransform(
 	const TGpuArray<IndexType>& Map,
 	TGpuArray<TypeOut>& Out)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	CheckArrayBounds<IndexType>(Map, 0, IndexType(Out.Num()) - 1);
 	
@@ -434,13 +436,11 @@ inline void ScatterWithTransform(
 	CheckArrayIsInjective([=] GPU_LAMBDA (uint64 Index) { return It[Index]; }, Map, Out.Num());
 	
 	thrust::scatter(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		It,
 		It + In.Num(),
 		Map.GetData(),
 		Out.GetData());
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename MapFunction, typename F>
@@ -450,22 +450,20 @@ inline void ScatterIf(
 	TGpuArray<TypeOut>& Out,
 	F Condition)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	thrust::scatter_if(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		MapTransform,
 		thrust::make_counting_iterator<uint64>(0),
 		Out.GetData(),
 		Condition);
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TypeIn, typename TypeOut, typename InF, typename MapFunction, typename F>
@@ -475,7 +473,7 @@ inline void ScatterIfWithTransform(
 	TGpuArray<TypeOut>& Out,
 	F Condition)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
@@ -483,15 +481,13 @@ inline void ScatterIfWithTransform(
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
 	thrust::scatter_if(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		It,
 		It + In.Num(),
 		MapTransform,
 		thrust::make_counting_iterator<uint64>(0),
 		Out.GetData(),
 		Condition);
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename InType, typename OutType, typename F>
@@ -500,18 +496,16 @@ inline void Transform(
 	TGpuArray<OutType>& Out,
 	F Lambda)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	checkEqual(In.Num(), Out.Num())
 	
 	thrust::transform(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		Out.GetData(),
 		Lambda);
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename InType, typename OutType, typename F1, typename F2>
@@ -522,17 +516,15 @@ inline void TransformIf(
 	F1 Lambda,
 	F2 Condition)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	thrust::transform_if(
-		ExecutionPolicy,
+		GetExecutionPolicy(),
 		In,
 		In + Num,
 		Out,
 		Lambda,
 		Condition);
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename TValueIt, typename TKey, typename TValue, typename F>
@@ -545,7 +537,7 @@ inline void MergePairs(
 	TGpuArray<TValue>& OutValues,
 	F Comp)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
 	checkEqual(OutKeys.Num(), OutValues.Num());
 	checkEqual(InKeysA.Num() + InKeysB.Num(), OutValues.Num());
@@ -571,10 +563,12 @@ inline void MergePairs(
 		}
 		void synchronize() override
 		{
+			CUDA_CHECK_LAST_ERROR();
 			CUDA_SYNCHRONIZE_STREAM();
+			CUDA_CHECK_LAST_ERROR();
 		}
 	};
-	static mgpu_context_t* mgpu_context = nullptr;
+	thread_local mgpu_context_t* mgpu_context = nullptr;
 	if (!mgpu_context)
 	{
 		mgpu_context = new mgpu_context_t();
@@ -586,16 +580,38 @@ inline void MergePairs(
 		OutKeys.GetData(), OutValues.GetData(),
 		Comp,
 		*mgpu_context);
-	
-	CUDA_SYNCHRONIZE_STREAM();
 }
 
 template<typename T>
 inline void MakeSequence(TGpuArray<T>& Array, T Init = 0)
 {
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECK_LAST_ERROR();
 	
-	thrust::sequence(ExecutionPolicy, Array.GetData(), Array.GetData() + Array.Num(), Init);
-	
-	CUDA_SYNCHRONIZE_STREAM();
+	thrust::sequence(GetExecutionPolicy(), Array.GetData(), Array.GetData() + Array.Num(), Init);
 }
+
+struct FTempStorage
+{
+	void* Ptr = nullptr;
+	size_t Bytes = 0;
+
+	FTempStorage()
+	{
+		CUDA_CHECK_LAST_ERROR();
+	}
+
+	inline void Allocate()
+	{
+		CUDA_CHECK_LAST_ERROR();
+		check(Bytes > 0);
+		CUDA_CHECKED_CALL cnmemMalloc(&Ptr, Bytes, 0);
+	}
+	inline void SyncAndFree()
+	{
+		CUDA_CHECK_LAST_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
+		CUDA_CHECKED_CALL cnmemFree(Ptr, 0);
+		Ptr = nullptr;
+		Bytes = 0;
+	}
+};

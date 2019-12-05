@@ -32,7 +32,8 @@ public:
 
 		float Elapsed; // in ms
 		CUDA_CHECKED_CALL cudaEventElapsedTime(&Elapsed, BeginEvent, EndEvent);
-		CUDA_CHECK_ERROR();
+		CUDA_SYNCHRONIZE_STREAM();
+		CUDA_CHECK_LAST_ERROR();
 
 		return Elapsed / 1000.;
 	}

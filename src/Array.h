@@ -223,12 +223,11 @@ struct TFixedArray
 
 	HOST void MemSet(uint8 Value)
 	{
-		PROFILE_FUNCTION();
+		PROFILE_FUNCTION_TRACY();
 		
 		if (MemoryType == EMemoryType::GPU)
 		{
 			CUDA_CHECKED_CALL cudaMemset(GetData(), Value, SizeInBytes());
-			CUDA_SYNCHRONIZE_STREAM();
 		}
 		else
 		{
@@ -293,6 +292,17 @@ struct TFixedArray
 	HOST_DEVICE const TElementType& operator[](TSize Index) const
 	{
 		checkf(Index < ArraySize, "invalid index: %" PRIu64 " for size %" PRIu64, Index, ArraySize);
+		return ArrayData[Index];
+	}
+
+	HOST TElementType& CheckedAt(TSize Index)
+	{
+		checkfAlways(Index < ArraySize, "invalid index: %" PRIu64 " for size %" PRIu64, Index, ArraySize);
+		return ArrayData[Index];
+	}
+	HOST const TElementType& CheckedAt(TSize Index) const
+	{
+		checkfAlways(Index < ArraySize, "invalid index: %" PRIu64 " for size %" PRIu64, Index, ArraySize);
 		return ArrayData[Index];
 	}
 
@@ -393,7 +403,7 @@ public:
 
 	HOST void CopyToGPU(TDynamicArray<TElementType, EMemoryType::GPU, TSize>& GPUArray) const
 	{
-		PROFILE_FUNCTION();
+		PROFILE_FUNCTION_TRACY();
 
 		static_assert(MemoryType == EMemoryType::CPU, "");
 		if (!GPUArray.is_valid())
@@ -446,7 +456,7 @@ public:
 	
 	HOST void Resize(TSize NewSize)
 	{
-		PROFILE_FUNCTION();
+		PROFILE_FUNCTION_TRACY();
 		
 		checkInfEqual(this->ArraySize, AllocatedSize);
 		check(this->ArrayData); // For the name
@@ -460,7 +470,7 @@ public:
 	}
 	HOST void ResizeUninitialized(TSize NewSize)
 	{
-		PROFILE_FUNCTION();
+		PROFILE_FUNCTION_TRACY();
 		
 		checkInfEqual(this->ArraySize, AllocatedSize);
 		check(this->ArrayData); // For the name
@@ -475,7 +485,7 @@ public:
 	
 	HOST void Shrink()
 	{
-		PROFILE_FUNCTION();
+		PROFILE_FUNCTION_TRACY();
 		
 		check(this->ArrayData);
 		check(this->ArraySize != 0);

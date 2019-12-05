@@ -77,7 +77,7 @@ public:
 
 	inline TResult GetResult_DoNotStartQuery(TQuery Query)
 	{
-		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
+		PROFILE_FUNCTION_COLOR_TRACY(COLOR_YELLOW);
 
 		TOptional<TResult> Result;
 		
@@ -115,7 +115,7 @@ public:
 	}
 	inline TResult GetResult(TQuery Query)
 	{
-		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
+		PROFILE_FUNCTION_COLOR_TRACY(COLOR_YELLOW);
 
 		StartQueries<1>({ Query });
 
@@ -125,7 +125,7 @@ public:
 	template<uint32 Count>
 	inline TStaticArray<TResult, Count> GetResults(TStaticArray<TQuery, Count> Queries)
 	{
-		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
+		PROFILE_FUNCTION_COLOR_TRACY(COLOR_YELLOW);
 
 		StartQueries(Queries);
 
@@ -144,7 +144,7 @@ public:
 	}
 	inline void Join()
 	{
-		PROFILE_FUNCTION_COLOR(COLOR_YELLOW);
+		PROFILE_FUNCTION_COLOR_TRACY(COLOR_YELLOW);
 
 		check(!Joined);
 		check(StopAtomic);
@@ -189,6 +189,7 @@ private:
 				{
 					PROFILE_SCOPE("Process %u", Query);
 					NewResult = ProcessFunction(Query, NewInput);
+					CUDA_SYNCHRONIZE_STREAM();
 				}
 
 				FScopeLock Lock(ProcessedQueriesMutex);
@@ -204,13 +205,15 @@ private:
 					FScopeLock Lock(QueriesToProcessMutex);
 					return !QueriesToProcess.empty();
 				};
-				PROFILE_SCOPE_COLOR(COLOR_YELLOW, "Wait");
+				PROFILE_SCOPE_COLOR_TRACY(COLOR_YELLOW, "Wait");
 				FUniqueLock Lock(ProcessWakeupMutex);
 				while (!ShouldWakeup()) ProcessWakeup.wait_for(Lock, std::chrono::milliseconds(10));
 			}
 		}
 
 		DestroyThread();
+
+		CUDA_CHECKED_CALL cudaStreamDestroy(DEFAULT_STREAM);
 	}
 
 	const char* const Name;

@@ -45,7 +45,7 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 	{
 		const double Start = Utils::Seconds();
 
-		const uint64 BlockSize = 1 << 16;
+		const uint64 BlockSize = 1 << 20;
 		const uint64 NumBlocks = Size / BlockSize;
 		for (uint64 BlockIndex = 0; BlockIndex < NumBlocks; BlockIndex++)
 		{
@@ -70,24 +70,17 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 
 	if (MemcpyKind == cudaMemcpyDeviceToDevice)
 	{
-		PROFILE_SCOPE("Memcpy DtD %fMB", Size / double(1u << 20));
-
-		const double Start = Utils::Seconds();
 		CUDA_CHECKED_CALL cudaMemcpyAsync(Dst, Src, Size, MemcpyKind, DEFAULT_STREAM);
-		CUDA_SYNCHRONIZE_STREAM();
-		const double End = Utils::Seconds();
-
-		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / (End - Start));
 	}
 	else if (MemcpyKind == cudaMemcpyDeviceToHost)
 	{
-		PROFILE_SCOPE("Memcpy DtH %fMB", Size / double(1u << 20));
+		PROFILE_SCOPE_TRACY("Memcpy DtH %fMB", Size / double(1u << 20));
 		const double Time = BlockCopy();
 		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / Time);
 	}
 	else if (MemcpyKind == cudaMemcpyHostToDevice)
 	{
-		PROFILE_SCOPE("Memcpy HtD %fMB", Size / double(1u << 20));
+		PROFILE_SCOPE_TRACY("Memcpy HtD %fMB", Size / double(1u << 20));
 		const double Time = BlockCopy();
 		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / Time);
 	}
@@ -95,40 +88,32 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 
 inline auto AllocGPU(void*& Ptr, uint64 Size)
 {
-	PROFILE_FUNCTION();
-	cnmemStatus_t Result = cnmemStatus_t(255);
-	while (Result != CNMEM_STATUS_SUCCESS)
-	{
-		if (Result != cnmemStatus_t(255))
-		{
-			PROFILE_SCOPE_COLOR(COLOR_RED, "Waiting for memory");
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
-		Result = cnmemMalloc(&Ptr, Size, DEFAULT_STREAM);
-	}
+	PROFILE_FUNCTION_TRACY();
+	const auto Result = cnmemMalloc(&Ptr, Size, 0);
 	TracyAlloc(Ptr, Size);
 	return Result;
 }
 inline auto AllocCPU(void*& Ptr, uint64 Size)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 	return cudaMallocHost(&Ptr, Size);
 }
-inline void FreeGPU(void* Ptr)
+inline void FreeGPU(void* Ptr, cudaStream_t Stream)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 	TracyFree(Ptr);
-	CUDA_CHECKED_CALL cnmemFree(Ptr, DEFAULT_STREAM);
+	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_CHECKED_CALL cnmemFree(Ptr, 0);
 }
 inline void FreeCPU(void* Ptr)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 	CUDA_CHECKED_CALL cudaFreeHost(Ptr);
 }
 
 void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 	
 	checkAlways(Size != 0);
 	void* Ptr = nullptr;
@@ -174,7 +159,7 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 			MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 		}
 		checkAlways(Allocations.find(Ptr) == Allocations.end());
-		Allocations[Ptr] = { Name, Size, Type };
+		Allocations[Ptr] = { Name, Size, Type, DEFAULT_STREAM };
 	}
 
 	return Ptr;
@@ -182,7 +167,7 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 
 void FMemory::FreeImpl(void* Ptr)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 	
 	if (!Ptr) return;
 
@@ -198,7 +183,7 @@ void FMemory::FreeImpl(void* Ptr)
 		ZONE_METADATA("Size: %" PRIu64 "B", Alloc.Size);
 		if (Alloc.Type == EMemoryType::GPU)
 		{
-			FreeGPU(Ptr);
+			FreeGPU(Ptr, Alloc.Stream);
 		}
 		else
 		{
@@ -224,7 +209,7 @@ void FMemory::FreeImpl(void* Ptr)
 
 void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 
 	const auto OldPtr = Ptr;
 	FAlloc OldAlloc;
@@ -268,7 +253,7 @@ void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
 
 void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, EMemoryType Type)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 
 	FScopeLock Lock(MemoryMutex);
 	checkAlways(Ptr);
@@ -292,7 +277,7 @@ void FMemory::RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, 
 
 void FMemory::UnregisterCustomAllocImpl(void* Ptr)
 {
-	PROFILE_FUNCTION();
+	PROFILE_FUNCTION_TRACY();
 
 	FScopeLock Lock(MemoryMutex);
 	checkAlways(Allocations.find(Ptr) != Allocations.end());

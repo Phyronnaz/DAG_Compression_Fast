@@ -19,25 +19,25 @@ public:
 		const char* Name = nullptr;
 		uint64 Size = uint64(-1);
 		EMemoryType Type = EMemoryType::CPU;
+		cudaStream_t Stream{};
 	};
 
 	template<typename T>
 	static T* Malloc(const char* Name, uint64 Size, EMemoryType Type)
 	{
-		CUDA_SYNCHRONIZE_STREAM();
 		checkAlways(Size % sizeof(T) == 0);
 		return reinterpret_cast<T*>(Singleton.MallocImpl(Name, Size, Type));
 	}
 	template<typename T>
 	static void Free(T* Ptr)
 	{
-		CUDA_SYNCHRONIZE_STREAM();
+		CUDA_CHECK_LAST_ERROR();
 		Singleton.FreeImpl(reinterpret_cast<void*>(Ptr));
 	}
 	template<typename T>
 	static void Realloc(T*& Ptr, uint64 NewSize, bool bCopyData = true)
 	{
-		CUDA_SYNCHRONIZE_STREAM();
+		CUDA_CHECK_LAST_ERROR();
 		void* Copy = reinterpret_cast<void*>(Ptr);
 		Singleton.ReallocImpl(Copy, NewSize, bCopyData);
 		Ptr = reinterpret_cast<T*>(Copy);
@@ -89,9 +89,8 @@ public:
 	template<typename T>
 	static T ReadGPUValue(const T* GPUPtr)
 	{
-		PROFILE_FUNCTION();
-
-		CUDA_CHECK_ERROR();
+		PROFILE_FUNCTION_TRACY();
+		CUDA_CHECK_LAST_ERROR();
 
 		thread_local T* CPU = nullptr;
 		if (!CPU)
@@ -100,17 +99,14 @@ public:
 		}
 		CudaMemcpy(CPU, GPUPtr, sizeof(T), cudaMemcpyDeviceToHost);
 
-		CUDA_CHECK_ERROR();
-
 		const T Value = *CPU;
 		return Value;
 	}
 	template<typename T>
 	static void SetGPUValue(T* GPUPtr, T Value)
 	{
-		PROFILE_FUNCTION();
-
-		CUDA_CHECK_ERROR();
+		PROFILE_FUNCTION_TRACY();
+		CUDA_CHECK_LAST_ERROR();
 
 		thread_local T* CPU = nullptr;
 		if (!CPU)
@@ -119,13 +115,12 @@ public:
 		}
 		*CPU = Value;
 		CudaMemcpy(GPUPtr, CPU, sizeof(T), cudaMemcpyHostToDevice);
-
-		CUDA_CHECK_ERROR();
 	}
 
 	template<typename T>
 	static void CudaMemcpy(T* Dst, const T* Src, uint64 Size, cudaMemcpyKind MemcpyKind)
 	{
+		CUDA_CHECK_LAST_ERROR();
 		check(Size % sizeof(T) == 0);
 		Singleton.CudaMemcpyImpl(reinterpret_cast<uint8*>(Dst), reinterpret_cast<const uint8*>(Src), Size, MemcpyKind);
 	}
@@ -159,11 +154,12 @@ class TSingleGPUElement
 public:
 	TSingleGPUElement()
 	{
-		CUDA_CHECKED_CALL cnmemMalloc(reinterpret_cast<void**>(&Ptr), sizeof(T), DEFAULT_STREAM);
+		CUDA_CHECKED_CALL cnmemMalloc(reinterpret_cast<void**>(&Ptr), sizeof(T), 0);
 	}
 	~TSingleGPUElement()
 	{
-		CUDA_CHECKED_CALL cnmemFree(Ptr, DEFAULT_STREAM);
+		CUDA_SYNCHRONIZE_STREAM();
+		CUDA_CHECKED_CALL cnmemFree(Ptr, 0);
 	}
 
 	inline T* GetPtr()
