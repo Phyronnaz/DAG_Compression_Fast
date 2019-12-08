@@ -1490,6 +1490,7 @@
     <CudaCompile Include="src\DAGCompression\CreateFinalDAG.cu" />
     <CudaCompile Include="src\DAGCompression\MergeDAG.cu" />
     <CudaCompile Include="src\DAGCompression\CheckDAG.cu" />
+    <CudaCompile Include="src\DAGCompression\CheckGPU.cu" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="src\Array.natvis" />

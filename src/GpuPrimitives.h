@@ -21,20 +21,41 @@
 
 #include "moderngpu/kernel_merge.hxx"
 
-#if DEBUG_THRUST
-inline auto GetExecutionPolicy()
+template<EMemoryType MemoryType>
+auto GetExecutionPolicy();
+
+template<>
+inline auto GetExecutionPolicy<EMemoryType::CPU>()
 {
 	struct my_policy : thrust::system::cpp::execution_policy<my_policy> {};
 	static auto ExecutionPolicy = my_policy();
 	return ExecutionPolicy;
 }
-#else
-inline auto GetExecutionPolicy()
+
+template<>
+inline auto GetExecutionPolicy<EMemoryType::GPU>()
 {
+#if DEBUG_THRUST
+	return GetExecutionPolicy<EMemoryType::CPU>();
+#else
 	thread_local const auto ExecutionPolicy = thrust::cuda::par.on(DEFAULT_STREAM);
 	return ExecutionPolicy;
-}
 #endif
+}
+
+template<typename T, typename F, EMemoryType MemoryType>
+inline void Foreach(
+	const TFixedArray<T, MemoryType>& In,
+	F Lambda)
+{
+	CUDA_CHECK_LAST_ERROR();
+	
+	thrust::for_each(
+		GetExecutionPolicy<EMemoryType::GPU>(),
+		In.GetData(),
+		In.GetData() + In.Num(),
+		Lambda);
+}
 
 template<typename T, typename F>
 inline auto TransformIterator(const T* Ptr, F Lambda)
@@ -55,19 +76,9 @@ inline void CheckEqual(const TFixedArray<T, MemoryType>& ArrayA, const TFixedArr
 	{
 		checkf(ArrayA[Index] == ArrayB[Index], "%" PRIu64 " == %" PRIu64 " (Index %" PRIu64 ")", uint64(ArrayA[Index]), uint64(ArrayB[Index]), Index);
 	};
-	if (MemoryType == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
-	{
-		const auto It = thrust::make_counting_iterator<uint64>(0);
-		thrust::for_each(GetExecutionPolicy(), It, It + ArrayA.Num(), Check);
-		CUDA_CHECK_LAST_ERROR();
-	}
-	else
-	{
-		for (uint64 Index = 0; Index < ArrayA.Num(); Index++)
-		{
-			Check(Index);
-		}
-	}
+	const auto It = thrust::make_counting_iterator<uint64>(0);
+	thrust::for_each(GetExecutionPolicy<MemoryType>(), It, It + ArrayA.Num(), Check);
+	CUDA_CHECK_LAST_ERROR();
 #endif
 }
 
@@ -77,27 +88,17 @@ inline void CheckIsSorted(const TFixedArray<T, MemoryType>& Array)
 	(void)Array;
 #if ENABLE_CHECKS
 	CUDA_CHECK_LAST_ERROR();
-	const auto Check = [=] GPU_LAMBDA(uint64 Index)
+	const auto Check = [=] GPU_LAMBDA (uint64 Index)
 	{
-		checkf(Array[Index] <= Array[Index + 1], "%" PRIu64 " <= %" PRIu64 " (Index %" PRIu64 ")", uint64(Array[Index]), uint64(Array[Index + 1]), Index);
+		checkf(Array[Index] <= Array[Index + 1], "%" PRIx64 " <= %" PRIx64 "; Index %" PRIu64, uint64(Array[Index]), uint64(Array[Index + 1]), Index);
 	};
-	if (MemoryType == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
-	{
-		const auto It = thrust::make_counting_iterator<uint64>(0);
-		thrust::for_each(GetExecutionPolicy(), It, It + Array.Num() - 1, Check);
-		CUDA_CHECK_LAST_ERROR();
-	}
-	else
-	{
-		for (uint64 Index = 0; Index < Array.Num() - 1; Index++)
-		{
-			Check(Index);
-		}
-	}
+	const auto It = thrust::make_counting_iterator<uint64>(0);
+	thrust::for_each(GetExecutionPolicy<MemoryType>(), It, It + Array.Num() - 1, Check);
+	CUDA_CHECK_LAST_ERROR();
 #endif
 }
 
-template<typename TIn, typename TOut, typename F, typename FCondition>
+template<EMemoryType MemoryType, typename TIn, typename TOut, typename F, typename FCondition>
 inline void CheckFunctionBoundsIf(
 	F Function,
 	FCondition Condition,
@@ -114,7 +115,7 @@ inline void CheckFunctionBoundsIf(
 	(void)MaxOutput;
 #if ENABLE_CHECKS
 	CUDA_CHECK_LAST_ERROR();
-	const auto Check = [=] GPU_LAMBDA(TIn Value)
+	const auto Check = [=] GPU_LAMBDA (TIn Value)
 	{
 		if (!Condition(Value)) return;
 		const TOut Output = Function(Value);
@@ -122,12 +123,12 @@ inline void CheckFunctionBoundsIf(
 		checkf(Output <= MaxOutput, "%" PRIi64 " <= %" PRIi64, int64(Output), int64(MaxOutput));
 	};
 	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
-	thrust::for_each(GetExecutionPolicy(), It, It + MaxInput - MinInput, Check);
+	thrust::for_each(GetExecutionPolicy<MemoryType>(), It, It + MaxInput - MinInput, Check);
 	CUDA_CHECK_LAST_ERROR();
 #endif
 }
 
-template<typename TIn, typename TOut, typename F>
+template<EMemoryType MemoryType, typename TIn, typename TOut, typename F>
 inline void CheckFunctionBounds(
 	F Function, 
 	TIn MinInput, 
@@ -135,21 +136,21 @@ inline void CheckFunctionBounds(
 	TOut MinOutput, 
 	TOut MaxOutput)
 {
-	CheckFunctionBoundsIf(Function, [] GPU_LAMBDA (TIn) { return true; }, MinInput, MaxInput, MinOutput, MaxOutput);
+	CheckFunctionBoundsIf<MemoryType>(Function, [] GPU_LAMBDA (TIn) { return true; }, MinInput, MaxInput, MinOutput, MaxOutput);
 }
 
-template<typename T>
-inline void CheckArrayBounds(const TGpuArray<T>& Array, T Min, T Max)
+template<EMemoryType MemoryType, typename T>
+inline void CheckArrayBounds(const TFixedArray<T, MemoryType>& Array, T Min, T Max)
 {
-	CheckFunctionBounds<uint64, T>(Array, 0, Array.Num() - 1, Min, Max);
+	CheckFunctionBounds<MemoryType>(Array, uint64(0), Array.Num() - 1, Min, Max);
 }
 
-template<typename TDataPred, typename TIn, typename F, typename FCondition>
+template<EMemoryType MemoryType, typename TDataPred, typename TIn, typename F, typename FCondition>
 inline void CheckFunctionIsInjectiveIf(
-	TDataPred Data, 
+	TDataPred Data,
 	F Function,
 	FCondition Condition,
-	TIn MinInput, 
+	TIn MinInput,
 	TIn MaxInput,
 	uint64 NumOutputs)
 {
@@ -165,90 +166,93 @@ inline void CheckFunctionIsInjectiveIf(
 	auto Counters = TGpuArray<uint64>("Counters", NumOutputs);
 	Counters.MemSet(0);
 
-	const auto Add = [=] GPU_ONLY_LAMBDA(TIn Value)
+	const auto Add = [=] GPU_ONLY_LAMBDA (TIn Value)
 	{
 		if (!Condition(Value)) return;
 		const uint64 Output = Function(Value);
 		atomicAdd(const_cast<uint64*>(&Counters[Output]), uint64(1));
 	};
 	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
-	thrust::for_each(GetExecutionPolicy(), It, It + MaxInput - MinInput, Add);
+	thrust::for_each(GetExecutionPolicy<MemoryType>(), It, It + MaxInput - MinInput, Add);
 	CheckArrayBounds(Counters, uint64(0), uint64(1));
 	CUDA_CHECK_LAST_ERROR();
 
 	Counters.Free();
 #else
 	using TData = typename std::remove_reference<decltype(Data({}))>::type;
-	auto DataTestArray = TGpuArray<TData>("DataTest", NumOutputs);
-	auto PreviousIndicesArray = TGpuArray<uint64>("PreviousIndicesArray", NumOutputs);
+	auto DataTestArray = TFixedArray<TData, MemoryType>("DataTest", NumOutputs);
+	auto PreviousIndicesArray = TFixedArray<uint64, MemoryType>("PreviousIndicesArray", NumOutputs);
 	DataTestArray.MemSet(0);
 	PreviousIndicesArray.MemSet(0xFF);
 
-#if !DEBUG_GPU_ARRAYS
-	const auto Check = [=] GPU_ONLY_LAMBDA (TIn Input)
+	if (MemoryType == EMemoryType::GPU)
 	{
-		if (!Condition(Input)) return;
-		const uint64 Output = Function(Input);
-		checkInf(Output, NumOutputs);
-		const auto DataValue = Data(Input);
-		auto& DataTest = const_cast<TData&>(DataTestArray[Output]);
-		
-		const uint32* RESTRICT const DataValueWords = reinterpret_cast<const uint32*>(&DataValue);
-		uint32* RESTRICT const DataTestWords = reinterpret_cast<uint32*>(&DataTest);
-		
-		static_assert(sizeof(Data) % 4 == 0, "");
-		for (int32 WordIndex = 0; WordIndex < sizeof(TData) / 4; WordIndex++)
+		const auto Check = [=] GPU_ONLY_LAMBDA (TIn Input)
 		{
-			const uint32 ExistingWord = atomicExch(&DataTestWords[WordIndex], DataValueWords[WordIndex]);
-			const uint64 PreviousIndex = atomicExch(const_cast<uint64*>(&PreviousIndicesArray[Output]), uint64(Input));
-			if (ExistingWord == 0) continue;
-			if (ExistingWord == DataValueWords[WordIndex]) continue;
-			printf("Different words: existing 0x%08x, writing 0x%08x. Index: %9" PRIu64 ". Mapping: %9" PRIu64 ". Word Index: %4u. Previous Write Index: %" PRIu64 "\n",
-				ExistingWord,
-				DataValueWords[WordIndex],
-				uint64(Input),
-				Output,
-				WordIndex,
-				PreviousIndex);
-			DEBUG_BREAK();
-		}
-	};
+			if (!Condition(Input)) return;
+			const uint64 Output = Function(Input);
+			checkInf(Output, NumOutputs);
+			const auto DataValue = Data(Input);
+			auto& DataTest = const_cast<TData&>(DataTestArray[Output]);
 
-	const auto It = thrust::make_counting_iterator<TIn>(MinInput);
-	thrust::for_each(GetExecutionPolicy(), It, It + MaxInput - MinInput, Check);
-	CUDA_CHECK_LAST_ERROR();
-#else
-	for (TIn Input = MinInput; Input <= MaxInput; Input++)
+			const uint32* RESTRICT const DataValueWords = reinterpret_cast<const uint32*>(&DataValue);
+			uint32* RESTRICT const DataTestWords = reinterpret_cast<uint32*>(&DataTest);
+
+			static_assert(sizeof(Data) % 4 == 0, "");
+			for (int32 WordIndex = 0; WordIndex < sizeof(TData) / 4; WordIndex++)
+			{
+				const uint32 ExistingWord = atomicExch(&DataTestWords[WordIndex], DataValueWords[WordIndex]);
+				const uint64 PreviousIndex = atomicExch(const_cast<uint64*>(&PreviousIndicesArray[Output]), uint64(Input));
+				if (ExistingWord == 0) continue;
+				if (ExistingWord == DataValueWords[WordIndex]) continue;
+				printf("Different words: existing 0x%08x, writing 0x%08x. Index: %9" PRIu64 ". Mapping: %9" PRIu64 ". Word Index: %4u. Previous Write Index: %" PRIu64 "\n",
+					ExistingWord,
+					DataValueWords[WordIndex],
+					uint64(Input),
+					Output,
+					WordIndex,
+					PreviousIndex);
+				DEBUG_BREAK();
+			}
+		};
+
+		const auto It = thrust::make_counting_iterator<TIn>(MinInput);
+		thrust::for_each(GetExecutionPolicy<EMemoryType::GPU>(), It, It + MaxInput - MinInput, Check);
+		CUDA_CHECK_LAST_ERROR();
+	}
+	else
 	{
-		if (!Condition(Input)) continue;
-		const uint64 Output = Function(Input);
-		checkInf(Output, NumOutputs);
-		const auto DataValue = Data(Input);
-		auto& DataTest = const_cast<TData&>(DataTestArray[Output]);
-
-		const uint32* RESTRICT const DataValueWords = reinterpret_cast<const uint32*>(&DataValue);
-		uint32* RESTRICT const DataTestWords = reinterpret_cast<uint32*>(&DataTest);
-
-		static_assert(sizeof(Data) % 4 == 0, "");
-		for (int32 WordIndex = 0; WordIndex < sizeof(TData) / 4; WordIndex++)
+		for (TIn Input = MinInput; Input <= MaxInput; Input++)
 		{
-			const uint32 ExistingWord = DataTestWords[WordIndex];
-			DataTestWords[WordIndex] = DataValueWords[WordIndex];
-			const uint64 PreviousIndex = PreviousIndicesArray[Output];
-			PreviousIndicesArray[Output] = uint64(Input);
-			if (ExistingWord == 0) continue;
-			if (ExistingWord == DataValueWords[WordIndex]) continue;
-			printf("Different words: existing 0x%08x, writing 0x%08x. Index: %9" PRIu64 ". Mapping: %9" PRIu64 ". Word Index: %4u. Previous Write Index: %" PRIu64 "\n",
-				ExistingWord,
-				DataValueWords[WordIndex],
-				uint64(Input),
-				Output,
-				WordIndex,
-				PreviousIndex);
-			DEBUG_BREAK();
+			if (!Condition(Input)) continue;
+			const uint64 Output = Function(Input);
+			checkInf(Output, NumOutputs);
+			const auto DataValue = Data(Input);
+			auto& DataTest = const_cast<TData&>(DataTestArray[Output]);
+
+			const uint32* RESTRICT const DataValueWords = reinterpret_cast<const uint32*>(&DataValue);
+			uint32* RESTRICT const DataTestWords = reinterpret_cast<uint32*>(&DataTest);
+
+			static_assert(sizeof(Data) % 4 == 0, "");
+			for (int32 WordIndex = 0; WordIndex < sizeof(TData) / 4; WordIndex++)
+			{
+				const uint32 ExistingWord = DataTestWords[WordIndex];
+				DataTestWords[WordIndex] = DataValueWords[WordIndex];
+				const uint64 PreviousIndex = PreviousIndicesArray[Output];
+				PreviousIndicesArray[Output] = uint64(Input);
+				if (ExistingWord == 0) continue;
+				if (ExistingWord == DataValueWords[WordIndex]) continue;
+				printf("Different words: existing 0x%08x, writing 0x%08x. Index: %9" PRIu64 ". Mapping: %9" PRIu64 ". Word Index: %4u. Previous Write Index: %" PRIu64 "\n",
+					ExistingWord,
+					DataValueWords[WordIndex],
+					uint64(Input),
+					Output,
+					WordIndex,
+					PreviousIndex);
+				DEBUG_BREAK();
+			}
 		}
 	}
-#endif
 
 	DataTestArray.Free();
 	PreviousIndicesArray.Free();
@@ -256,7 +260,7 @@ inline void CheckFunctionIsInjectiveIf(
 #endif
 }
 
-template<typename TData, typename TIn, typename F>
+template<EMemoryType MemoryType, typename TData, typename TIn, typename F>
 inline void CheckFunctionIsInjective(
 	TData Data, 
 	F Function, 
@@ -264,16 +268,16 @@ inline void CheckFunctionIsInjective(
 	TIn MaxInput,
 	uint64 NumOutputs)
 {
-	CheckFunctionIsInjectiveIf(Data, Function, [] GPU_LAMBDA (TIn) { return true; }, MinInput, MaxInput, NumOutputs);
+	CheckFunctionIsInjectiveIf<MemoryType>(Data, Function, [] GPU_LAMBDA (TIn) { return true; }, MinInput, MaxInput, NumOutputs);
 }
 
-template<typename TData, typename TB>
+template<EMemoryType MemoryType, typename TData, typename TB>
 inline void CheckArrayIsInjective(
 	TData Data, 
-	const TGpuArray<TB>& Array, 
+	const TFixedArray<TB, MemoryType>& Array, 
 	uint64 NumOutputs)
 {
-	CheckFunctionIsInjective(Data, Array, uint64(0), Array.Num() - 1, NumOutputs);
+	CheckFunctionIsInjective<MemoryType>(Data, Array, uint64(0), Array.Num() - 1, NumOutputs);
 }
 
 namespace cub
@@ -349,7 +353,7 @@ inline void AdjacentDifference(
 	checkEqual(In.Num(), Out.Num())
 
 	thrust::transform(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<EMemoryType::GPU>(),
 		In.GetData() + 1,
 		In.GetData() + In.Num(),
 		In.GetData(),
@@ -372,7 +376,7 @@ inline void AdjacentDifferenceWithTransform(
 
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
 	thrust::transform(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<EMemoryType::GPU>(),
 		It + 1,
 		It + In.Num(),
 		It,
@@ -382,82 +386,82 @@ inline void AdjacentDifferenceWithTransform(
 	SetElement(Out, 0, FirstElement);
 }
 
-template<typename TypeIn, typename TypeOut, typename MapFunction>
+template<typename TypeIn, typename TypeOut, typename MapFunction, EMemoryType MemoryType>
 inline void ScatterPred(
-	const TGpuArray<TypeIn>& In,
+	const TFixedArray<TypeIn, MemoryType>& In,
 	MapFunction Map,
 	TGpuArray<TypeOut>& Out)
 {
 	CUDA_CHECK_LAST_ERROR();
 	
-	CheckFunctionBounds(Map, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
-	CheckFunctionIsInjective(In, Map, uint64(0), In.Num() - 1, Out.Num());
+	CheckFunctionBounds<MemoryType>(Map, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
+	CheckFunctionIsInjective<MemoryType>(In, Map, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	thrust::scatter(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<MemoryType>(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		MapTransform,
 		Out.GetData());
 }
 
-template<typename TypeIn, typename TypeOut, typename IndexType>
+template<typename TypeIn, typename TypeOut, typename IndexType, EMemoryType MemoryType>
 inline void Scatter(
-	const TGpuArray<TypeIn>& In,
-	const TGpuArray<IndexType>& Map,
-	TGpuArray<TypeOut>& Out)
+	const TFixedArray<TypeIn, MemoryType>& In,
+	const TFixedArray<IndexType, MemoryType>& Map,
+	TFixedArray<TypeOut, MemoryType>& Out)
 {
 	CUDA_CHECK_LAST_ERROR();
 	
-	CheckArrayBounds(Map, IndexType(0), IndexType(Out.Num() - 1));
-	CheckArrayIsInjective(In, Map, Out.Num());
+	CheckArrayBounds<MemoryType>(Map, IndexType(0), IndexType(Out.Num() - 1));
+	CheckArrayIsInjective<MemoryType>(In, Map, Out.Num());
 	
 	thrust::scatter(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<MemoryType>(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		Map.GetData(),
 		Out.GetData());
 }
 
-template<typename TypeIn, typename TypeOut, typename InF, typename IndexType>
+template<typename TypeIn, typename TypeOut, typename InF, typename IndexType, EMemoryType MemoryType>
 inline void ScatterWithTransform(
-	const TGpuArray<TypeIn>& In, InF Transform,
-	const TGpuArray<IndexType>& Map,
-	TGpuArray<TypeOut>& Out)
+	const TFixedArray<TypeIn, MemoryType>& In, InF Transform,
+	const TFixedArray<IndexType, MemoryType>& Map,
+	TFixedArray<TypeOut, MemoryType>& Out)
 {
 	CUDA_CHECK_LAST_ERROR();
 	
-	CheckArrayBounds<IndexType>(Map, 0, IndexType(Out.Num()) - 1);
+	CheckArrayBounds<MemoryType, IndexType>(Map, 0, IndexType(Out.Num()) - 1);
 	
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
 	
-	CheckArrayIsInjective([=] GPU_LAMBDA (uint64 Index) { return It[Index]; }, Map, Out.Num());
+	CheckArrayIsInjective<MemoryType>([=] GPU_LAMBDA (uint64 Index) { return It[Index]; }, Map, Out.Num());
 	
 	thrust::scatter(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<MemoryType>(),
 		It,
 		It + In.Num(),
 		Map.GetData(),
 		Out.GetData());
 }
 
-template<typename TypeIn, typename TypeOut, typename MapFunction, typename F>
+template<typename TypeIn, typename TypeOut, typename MapFunction, typename F, EMemoryType MemoryType>
 inline void ScatterIf(
-	const TGpuArray<TypeIn>& In,
+	const TFixedArray<TypeIn, MemoryType>& In,
 	MapFunction Map,
-	TGpuArray<TypeOut>& Out,
+	TFixedArray<TypeOut, MemoryType>& Out,
 	F Condition)
 {
 	CUDA_CHECK_LAST_ERROR();
 	
-	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
-	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
+	CheckFunctionBoundsIf<MemoryType>(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
+	CheckFunctionIsInjectiveIf<MemoryType>(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	thrust::scatter_if(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<MemoryType>(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		MapTransform,
@@ -466,22 +470,22 @@ inline void ScatterIf(
 		Condition);
 }
 
-template<typename TypeIn, typename TypeOut, typename InF, typename MapFunction, typename F>
+template<typename TypeIn, typename TypeOut, typename InF, typename MapFunction, typename F, EMemoryType MemoryType>
 inline void ScatterIfWithTransform(
-	const TGpuArray<TypeIn>& In, InF Transform,
+	const TFixedArray<TypeIn, MemoryType>& In, InF Transform,
 	MapFunction Map,
-	TGpuArray<TypeOut>& Out,
+	TFixedArray<TypeOut, MemoryType>& Out,
 	F Condition)
 {
 	CUDA_CHECK_LAST_ERROR();
 	
-	CheckFunctionBoundsIf(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
-	CheckFunctionIsInjectiveIf(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
+	CheckFunctionBoundsIf<MemoryType>(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
+	CheckFunctionIsInjectiveIf<MemoryType>(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
 	
 	const auto MapTransform = thrust::make_transform_iterator(thrust::make_counting_iterator<uint64>(0), Map);
 	const auto It = thrust::make_transform_iterator(In.GetData(), Transform);
 	thrust::scatter_if(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<MemoryType>(),
 		It,
 		It + In.Num(),
 		MapTransform,
@@ -501,7 +505,7 @@ inline void Transform(
 	checkEqual(In.Num(), Out.Num())
 	
 	thrust::transform(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<EMemoryType::GPU>(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		Out.GetData(),
@@ -519,7 +523,7 @@ inline void TransformIf(
 	CUDA_CHECK_LAST_ERROR();
 	
 	thrust::transform_if(
-		GetExecutionPolicy(),
+		GetExecutionPolicy<EMemoryType::GPU>(),
 		In,
 		In + Num,
 		Out,
@@ -587,7 +591,7 @@ inline void MakeSequence(TGpuArray<T>& Array, T Init = 0)
 {
 	CUDA_CHECK_LAST_ERROR();
 	
-	thrust::sequence(GetExecutionPolicy(), Array.GetData(), Array.GetData() + Array.Num(), Init);
+	thrust::sequence(GetExecutionPolicy<EMemoryType::GPU>(), Array.GetData(), Array.GetData() + Array.Num(), Init);
 }
 
 struct FTempStorage

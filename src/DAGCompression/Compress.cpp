@@ -48,6 +48,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 
 			const double CreateDAGStartTime = Utils::Seconds();
 			auto CpuDag = CreateSubDAG(Fragments);
+			CUDA_SYNCHRONIZE_STREAM();
 			const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
 			TotalCreateDAGTime += CreateDAGElapsed;
 			LOG_DEBUG("CreateDAG took %fs", CreateDAGElapsed);
@@ -74,6 +75,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	else
 	{
 		MergedDag = DAGCompression::MergeDAGs(std::move(DagsToMerge));
+		CUDA_SYNCHRONIZE_STREAM();
 	}
 	const double MergeDagsElapsed = Utils::Seconds() - MergeDagsStartTime;
 	LOG_DEBUG("MergeDags took %fs", MergeDagsElapsed);
@@ -82,6 +84,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 
 	const double CreateFinalDAGStartTime = Utils::Seconds();
 	const auto FinalDag = DAGCompression::CreateFinalDAG(std::move(MergedDag));
+	CUDA_SYNCHRONIZE_STREAM();
 	const double CreateFinalDAGElapsed = Utils::Seconds() - CreateFinalDAGStartTime;
 	LOG_DEBUG("CreateFinalDAG took %fs", CreateFinalDAGElapsed);
 
@@ -187,7 +190,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 		};
 		TIndexedThread<FFragments, FFragments> SortFragmentsThread(
 			"1 - SortFragmentsThread",
-			GetResultLambda_Prefetch<4>(VoxelizerThread, AABBs.size()),
+			GetResultLambda_Prefetch<1>(VoxelizerThread, AABBs.size()),
 			SortFragmentsThreadOutput,
 			1);
 
@@ -210,7 +213,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 		};
 		TIndexedThread<FFragments, FFragments> ExtractColorsThread(
 			"2 - ExtractColorsThread",
-			GetResultLambda_Prefetch<4>(SortFragmentsThread, AABBs.size()),
+			GetResultLambda_Prefetch<1>(SortFragmentsThread, AABBs.size()),
 			ExtractColorsThreadOutput,
 			1);
 
@@ -232,7 +235,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 		};
 		TIndexedThread<FFragments, FLeavesFragments> ExtractAndSortLeavesThread(
 			"3 - ExtractAndSortLeavesThread",
-			GetResultLambda_Prefetch<4>(ExtractColorsThread, AABBs.size()),
+			GetResultLambda_Prefetch<1>(ExtractColorsThread, AABBs.size()),
 			ExtractAndSortLeavesThreadOutput,
 			1);
 
@@ -275,9 +278,9 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 		};
 		TIndexedThread<FLeavesFragments, FCpuDag> ExtractSubDagThread(
 			"4 - ExtractSubDagThread",
-			GetResultLambda_Prefetch<4>(ExtractAndSortLeavesThread, AABBs.size()),
+			GetResultLambda_Prefetch<1>(ExtractAndSortLeavesThread, AABBs.size()),
 			ExtractSubDagThreadOutput,
-			4);
+			2);
 
 		using FDagChildren = TStaticArray<FCpuDag, 8>;
 		std::vector<std::unique_ptr<TIndexedThread<FDagChildren, FCpuDag>>> MergeThreads(LEVELS - SUBDAG_LEVELS);

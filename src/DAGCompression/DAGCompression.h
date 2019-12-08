@@ -123,4 +123,6 @@ namespace DAGCompression
 	void CheckDag(const FFinalDag& FinalDag);
 	// Returns total num leaves
 	uint64 CheckDag(const TCpuArray<uint32>& Dag, const TCpuArray<uint64>& EnclosedLeaves);
+
+	void CheckGPU();
 }

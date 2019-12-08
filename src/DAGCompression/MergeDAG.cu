@@ -60,13 +60,95 @@ inline uint32 Merge(
 		OutIndicesBToMergedIndices,
 		[=] GPU_LAMBDA (uint64 Index) { return Utils::HasFlag(Permutation[Index]); });
 
-	CheckArrayBounds<uint32>(OutIndicesAToMergedIndices, 0, NumUniques - 1);
-	CheckArrayBounds<uint32>(OutIndicesBToMergedIndices, 0, NumUniques - 1);
+	CheckArrayBounds(OutIndicesAToMergedIndices, 0u, NumUniques - 1);
+	CheckArrayBounds(OutIndicesBToMergedIndices, 0u, NumUniques - 1);
 
 	UniqueSum.Free();
 	Permutation.Free();
 
 	return NumUniques;
+}
+
+inline uint32 Merge(
+	const TCpuArray<uint64>& KeysA,
+	const TCpuArray<uint64>& KeysB,
+	TCpuArray<uint32>& OutIndicesAToMergedIndices,
+	TCpuArray<uint32>& OutIndicesBToMergedIndices)
+{
+	PROFILE_FUNCTION_TRACY();
+
+	check(KeysA.Num() > 0);
+	check(KeysB.Num() > 0);
+
+	check(!OutIndicesAToMergedIndices.IsValid());
+	check(!OutIndicesBToMergedIndices.IsValid());
+
+	CheckIsSorted(KeysA);
+	CheckIsSorted(KeysB);
+	
+	OutIndicesAToMergedIndices = { "IndicesAToMergedIndices", KeysA.Num() };
+	OutIndicesBToMergedIndices = { "IndicesBToMergedIndices", KeysB.Num() };
+
+	int32 Counter = 0; // Pointer to the last item! Num = Counter + 1
+	int32 IndexA = 0;
+	int32 IndexB = 0;
+	uint64 Last = std::min(KeysA[0], KeysB[0]);
+	
+	while (IndexA < KeysA.Num() && IndexB < KeysB.Num())
+	{
+		const uint64 KeyA = KeysA[IndexA];
+		const uint64 KeyB = KeysB[IndexB];
+		if (KeyA == Last)
+		{
+			OutIndicesAToMergedIndices[IndexA++] = Counter;
+		}
+		else if (KeyB == Last)
+		{
+			OutIndicesBToMergedIndices[IndexB++] = Counter;
+		}
+		else if (KeyA < KeyB)
+		{
+			Last = KeyA;
+			OutIndicesAToMergedIndices[IndexA++] = ++Counter;
+		}
+		else
+		{
+			// KeyB <= KeyA
+			Last = KeyB;
+			OutIndicesBToMergedIndices[IndexB++] = ++Counter;
+		}
+	}
+	while (IndexA < KeysA.Num())
+	{
+		const uint64 KeyA = KeysA[IndexA];
+		if (KeyA == Last)
+		{
+			OutIndicesAToMergedIndices[IndexA++] = Counter;
+		}
+		else
+		{
+			Last = KeyA;
+			OutIndicesAToMergedIndices[IndexA++] = ++Counter;
+		}
+	}
+	while (IndexB < KeysB.Num())
+	{
+		const uint64 KeyB = KeysB[IndexB];
+		if (KeyB == Last)
+		{
+			OutIndicesBToMergedIndices[IndexB++] = Counter;
+		}
+		else
+		{
+			Last = KeyB;
+			OutIndicesBToMergedIndices[IndexB++] = ++Counter;
+		}
+	}
+	
+	checkEqual(IndexA, KeysA.Num());
+	checkEqual(IndexB, KeysB.Num());
+	
+	return Counter + 1;
 }
 
 FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
@@ -93,132 +175,210 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 	
 	FCpuDag MergedCpuDag;
 	MergedCpuDag.Levels.resize(NumLevels);
-
-	TGpuArray<uint32> IndicesAToMergedIndices;
-	TGpuArray<uint32> IndicesBToMergedIndices;
+	
+	TGpuArray<uint32> PreviousIndicesAToMergedIndices;
+	TGpuArray<uint32> PreviousIndicesBToMergedIndices;
 	{
-		auto LeavesA = A.Leaves.CreateGPU();
-		auto LeavesB = B.Leaves.CreateGPU();
-		A.Leaves.Free();
-		B.Leaves.Free();
-
-		const uint32 NumMergedLeaves = Merge(
-			LeavesA,
-			LeavesB,
-			IndicesAToMergedIndices,
-			IndicesBToMergedIndices);
-
-		auto MergedLeaves = TGpuArray<uint64>("MergedLeaves", NumMergedLeaves);
-		Scatter(LeavesA, IndicesAToMergedIndices, MergedLeaves);
-		Scatter(LeavesB, IndicesBToMergedIndices, MergedLeaves);
-
-		LeavesA.Free();
-		LeavesB.Free();
-
-		MergedCpuDag.Leaves = MergedLeaves.CreateCPU();
-		MergedLeaves.Free();
+		TGpuArray<uint32> IndicesAToMergedIndices;
+		TGpuArray<uint32> IndicesBToMergedIndices;
+		{
+			auto LeavesA = A.Leaves.CreateGPU();
+			auto LeavesB = B.Leaves.CreateGPU();
+			A.Leaves.Free();
+			B.Leaves.Free();
+			const uint32 NumMergedLeaves = Merge(
+				LeavesA,
+				LeavesB,
+				IndicesAToMergedIndices,
+				IndicesBToMergedIndices);
+			auto MergedLeaves = TGpuArray<uint64>("MergedLeaves", NumMergedLeaves);
+			Scatter(LeavesA, IndicesAToMergedIndices, MergedLeaves);
+			Scatter(LeavesB, IndicesBToMergedIndices, MergedLeaves);
+			LeavesA.Free();
+			LeavesB.Free();
+			MergedCpuDag.Leaves = MergedLeaves.CreateCPU();
+			MergedLeaves.Free();
+		}
+		PreviousIndicesAToMergedIndices = IndicesAToMergedIndices;
+		PreviousIndicesBToMergedIndices = IndicesBToMergedIndices;
 	}
-
-	auto PreviousIndicesAToMergedIndices = IndicesAToMergedIndices;
-	auto PreviousIndicesBToMergedIndices = IndicesBToMergedIndices;
-	IndicesAToMergedIndices.Reset();
-	IndicesBToMergedIndices.Reset();
+	
+	TCpuArray<uint32> PreviousIndicesAToMergedIndices_CPU;
+	TCpuArray<uint32> PreviousIndicesBToMergedIndices_CPU;
 
 	for (int32 LevelIndex = NumLevels - 1; LevelIndex >= 0; LevelIndex--)
 	{
-		auto& LevelA = A.Levels[LevelIndex];
-		auto& LevelB = B.Levels[LevelIndex];
+		FCpuLevel& LevelA = A.Levels[LevelIndex];
+		FCpuLevel& LevelB = B.Levels[LevelIndex];
 
-		auto HashesA = LevelA.Hashes.CreateGPU();
-		auto HashesB = LevelB.Hashes.CreateGPU();
-		LevelA.Hashes.Free();
-		LevelB.Hashes.Free();
-		
-		const uint32 NumMerged = Merge(
-			HashesA,
-			HashesB,
-			IndicesAToMergedIndices,
-			IndicesBToMergedIndices);
-
-		FCpuLevel MergedLevel;
-
+		if (LevelA.Hashes.Num() + LevelB.Hashes.Num() > MERGE_MIN_NODES_FOR_GPU)
 		{
-			auto MergedHashes = TGpuArray<uint64>("MergedHashes", NumMerged);
-
-			Scatter(HashesA, IndicesAToMergedIndices, MergedHashes);
-			Scatter(HashesB, IndicesBToMergedIndices, MergedHashes);
-
-			HashesA.Free();
-			HashesB.Free();
-
-			MergedLevel.Hashes = MergedHashes.CreateCPU();
-			MergedHashes.Free();
-		}
-
-		{
-			auto MergedChildMasks = TGpuArray<uint8>("MergedChildMasks", NumMerged);
+			check(PreviousIndicesAToMergedIndices_CPU.Num() == 0 && PreviousIndicesBToMergedIndices_CPU.Num() == 0);
 			
-			auto ChildMasksA = LevelA.ChildMasks.CreateGPU();
-			auto ChildMasksB = LevelB.ChildMasks.CreateGPU();
-			LevelA.ChildMasks.Free();
-			LevelB.ChildMasks.Free();
+			auto HashesA = LevelA.Hashes.CreateGPU();
+			auto HashesB = LevelB.Hashes.CreateGPU();
+			LevelA.Hashes.Free();
+			LevelB.Hashes.Free();
 
-			Scatter(ChildMasksA, IndicesAToMergedIndices, MergedChildMasks);
-			Scatter(ChildMasksB, IndicesBToMergedIndices, MergedChildMasks);
+			TGpuArray<uint32> IndicesAToMergedIndices;
+			TGpuArray<uint32> IndicesBToMergedIndices;
+			const uint32 NumMerged = Merge(
+				HashesA,
+				HashesB,
+				IndicesAToMergedIndices,
+				IndicesBToMergedIndices);
 
-			ChildMasksA.Free();
-			ChildMasksB.Free();
+			FCpuLevel MergedLevel;
 
-			MergedLevel.ChildMasks = MergedChildMasks.CreateCPU();
-			MergedChildMasks.Free();
-		}
-
-		{
-			const auto Transform = [] GPU_LAMBDA(const TGpuArray<uint32>& IndicesMap, FChildrenIndices Indices)
 			{
-				for (uint32& Index : Indices.Indices)
+				auto MergedHashes = TGpuArray<uint64>("MergedHashes", NumMerged);
+
+				Scatter(HashesA, IndicesAToMergedIndices, MergedHashes);
+				Scatter(HashesB, IndicesBToMergedIndices, MergedHashes);
+
+				HashesA.Free();
+				HashesB.Free();
+
+				MergedLevel.Hashes = MergedHashes.CreateCPU();
+				MergedHashes.Free();
+			}
+
+			{
+				auto MergedChildMasks = TGpuArray<uint8>("MergedChildMasks", NumMerged);
+
+				auto ChildMasksA = LevelA.ChildMasks.CreateGPU();
+				auto ChildMasksB = LevelB.ChildMasks.CreateGPU();
+				LevelA.ChildMasks.Free();
+				LevelB.ChildMasks.Free();
+
+				Scatter(ChildMasksA, IndicesAToMergedIndices, MergedChildMasks);
+				Scatter(ChildMasksB, IndicesBToMergedIndices, MergedChildMasks);
+
+				ChildMasksA.Free();
+				ChildMasksB.Free();
+
+				MergedLevel.ChildMasks = MergedChildMasks.CreateCPU();
+				MergedChildMasks.Free();
+			}
+
+			{
+				const auto Transform = [] GPU_LAMBDA(const TGpuArray<uint32> & IndicesMap, FChildrenIndices Indices)
 				{
-					if (Index != 0xFFFFFFFF)
+					for (uint32& Index : Indices.Indices)
 					{
-						Index = IndicesMap[Index];
+						if (Index != 0xFFFFFFFF)
+						{
+							Index = IndicesMap[Index];
+						}
 					}
-				}
-				return Indices;
-			};
-			const auto TransformA = [=] GPU_LAMBDA(FChildrenIndices Indices) { return Transform(PreviousIndicesAToMergedIndices, Indices); };
-			const auto TransformB = [=] GPU_LAMBDA(FChildrenIndices Indices) { return Transform(PreviousIndicesBToMergedIndices, Indices); };
+					return Indices;
+				};
+				const auto TransformA = [=] GPU_LAMBDA(FChildrenIndices Indices) { return Transform(PreviousIndicesAToMergedIndices, Indices); };
+				const auto TransformB = [=] GPU_LAMBDA(FChildrenIndices Indices) { return Transform(PreviousIndicesBToMergedIndices, Indices); };
 
-			auto MergedChildrenIndices = TGpuArray<FChildrenIndices>("MergedChildrenIndices", NumMerged);
+				auto MergedChildrenIndices = TGpuArray<FChildrenIndices>("MergedChildrenIndices", NumMerged);
 
-			auto ChildrenIndicesA = LevelA.ChildrenIndices.CreateGPU();
-			auto ChildrenIndicesB = LevelB.ChildrenIndices.CreateGPU();
-			LevelA.ChildrenIndices.Free();
-			LevelB.ChildrenIndices.Free();
+				auto ChildrenIndicesA = LevelA.ChildrenIndices.CreateGPU();
+				auto ChildrenIndicesB = LevelB.ChildrenIndices.CreateGPU();
+				LevelA.ChildrenIndices.Free();
+				LevelB.ChildrenIndices.Free();
 
-			ScatterWithTransform(ChildrenIndicesA, TransformA, IndicesAToMergedIndices, MergedChildrenIndices);
-			ScatterWithTransform(ChildrenIndicesB, TransformB, IndicesBToMergedIndices, MergedChildrenIndices);
-			
-			ChildrenIndicesA.Free();
-			ChildrenIndicesB.Free();
+				ScatterWithTransform(ChildrenIndicesA, TransformA, IndicesAToMergedIndices, MergedChildrenIndices);
+				ScatterWithTransform(ChildrenIndicesB, TransformB, IndicesBToMergedIndices, MergedChildrenIndices);
 
-			MergedLevel.ChildrenIndices = MergedChildrenIndices.CreateCPU();
-			MergedChildrenIndices.Free();
+				ChildrenIndicesA.Free();
+				ChildrenIndicesB.Free();
+
+				MergedLevel.ChildrenIndices = MergedChildrenIndices.CreateCPU();
+				MergedChildrenIndices.Free();
+			}
+
+			CheckLevelIndices(MergedLevel);
+			CheckIsSorted(MergedLevel.Hashes);
+			MergedCpuDag.Levels[LevelIndex] = MergedLevel;
+
+			PreviousIndicesAToMergedIndices.Free();
+			PreviousIndicesBToMergedIndices.Free();
+			PreviousIndicesAToMergedIndices = IndicesAToMergedIndices;
+			PreviousIndicesBToMergedIndices = IndicesBToMergedIndices;
 		}
-		
-		CheckLevelIndices(MergedLevel);
-		CheckIsSorted(MergedLevel.Hashes);
-		MergedCpuDag.Levels[LevelIndex] = MergedLevel;
+		else
+		{
+			if (PreviousIndicesAToMergedIndices_CPU.Num() == 0 && PreviousIndicesAToMergedIndices.Num() > 0)
+			{
+				PreviousIndicesAToMergedIndices_CPU = PreviousIndicesAToMergedIndices.CreateCPU();
+				PreviousIndicesAToMergedIndices.Free();
+			}
+			if (PreviousIndicesBToMergedIndices_CPU.Num() == 0 && PreviousIndicesBToMergedIndices.Num() > 0)
+			{
+				PreviousIndicesBToMergedIndices_CPU = PreviousIndicesBToMergedIndices.CreateCPU();
+				PreviousIndicesBToMergedIndices.Free();
+			}
+			
+			const auto HashesA = LevelA.Hashes;
+			const auto HashesB = LevelB.Hashes;
+			
+			TCpuArray<uint32> IndicesAToMergedIndices;
+			TCpuArray<uint32> IndicesBToMergedIndices;
+			const uint32 NumMerged = Merge(
+				HashesA,
+				HashesB,
+				IndicesAToMergedIndices,
+				IndicesBToMergedIndices);
 
-		PreviousIndicesAToMergedIndices.Free();
-		PreviousIndicesBToMergedIndices.Free();
-		PreviousIndicesAToMergedIndices = IndicesAToMergedIndices;
-		PreviousIndicesBToMergedIndices = IndicesBToMergedIndices;
-		IndicesAToMergedIndices.Reset();
-		IndicesBToMergedIndices.Reset();
+			FCpuLevel MergedLevel;
+
+			{
+				MergedLevel.Hashes = TCpuArray<uint64>("Hashes", NumMerged);
+				Scatter(HashesA, IndicesAToMergedIndices, MergedLevel.Hashes);
+				Scatter(HashesB, IndicesBToMergedIndices, MergedLevel.Hashes);
+				CheckIsSorted(MergedLevel.Hashes);
+			}
+
+			{
+				MergedLevel.ChildMasks = TCpuArray<uint8>("ChildMasks", NumMerged);
+				Scatter(LevelA.ChildMasks, IndicesAToMergedIndices, MergedLevel.ChildMasks);
+				Scatter(LevelB.ChildMasks, IndicesBToMergedIndices, MergedLevel.ChildMasks);
+			}
+
+			{
+				const auto Transform = [] GPU_LAMBDA (const TCpuArray<uint32>& IndicesMap, FChildrenIndices Indices)
+				{
+					for (uint32& Index : Indices.Indices)
+					{
+						if (Index != 0xFFFFFFFF)
+						{
+							Index = IndicesMap[Index];
+						}
+					}
+					return Indices;
+				};
+				const auto TransformA = [=] GPU_LAMBDA (FChildrenIndices Indices) { return Transform(PreviousIndicesAToMergedIndices_CPU, Indices); };
+				const auto TransformB = [=] GPU_LAMBDA (FChildrenIndices Indices) { return Transform(PreviousIndicesBToMergedIndices_CPU, Indices); };
+
+				MergedLevel.ChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", NumMerged);
+				ScatterWithTransform(LevelA.ChildrenIndices, TransformA, IndicesAToMergedIndices, MergedLevel.ChildrenIndices);
+				ScatterWithTransform(LevelB.ChildrenIndices, TransformB, IndicesBToMergedIndices, MergedLevel.ChildrenIndices);
+			}
+
+			CheckLevelIndices(MergedLevel);
+			CheckIsSorted(MergedLevel.Hashes);
+			MergedCpuDag.Levels[LevelIndex] = MergedLevel;
+
+			PreviousIndicesAToMergedIndices_CPU.Free();
+			PreviousIndicesBToMergedIndices_CPU.Free();
+			PreviousIndicesAToMergedIndices_CPU = IndicesAToMergedIndices;
+			PreviousIndicesBToMergedIndices_CPU = IndicesBToMergedIndices;
+
+			LevelA.Free();
+			LevelB.Free();
+		}
 	}
 
 	PreviousIndicesAToMergedIndices.Free();
 	PreviousIndicesBToMergedIndices.Free();
+	PreviousIndicesAToMergedIndices_CPU.Free();
+	PreviousIndicesBToMergedIndices_CPU.Free();
 
 	return MergedCpuDag;
 }

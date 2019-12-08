@@ -7,11 +7,12 @@
 
 #define ENABLE_COLORS 0
 
-#define LEVELS 15
+#define LEVELS 14
 #define TOP_LEVEL MAX(LEVELS - 8, 0)
 #define SUBDAG_LEVELS 11
-#define VOXELIZER_MAX_NUM_FRAGMENTS 100 * 1024 * 1024
-#define GPU_MEMORY_ALLOCATED_IN_GB 3.0
+#define VOXELIZER_MAX_NUM_FRAGMENTS (150 * 1024 * 1024)
+#define GPU_MEMORY_ALLOCATED_IN_GB 6.0
+#define MERGE_MIN_NODES_FOR_GPU 50000 // Under this number of node in a level, the CPU will be used
 
 #define NUM_MERGE_COLORS_THREADS 4
 

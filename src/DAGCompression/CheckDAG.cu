@@ -35,19 +35,9 @@ inline void DAGCompression::CheckLevelIndices(const T& Level)
 			DEBUG_BREAK();
 		}
 	};
-	if (ChildrenIndices.GetMemoryType() == EMemoryType::GPU && !DEBUG_GPU_ARRAYS)
-	{
-		const auto It = thrust::make_counting_iterator<uint64>(0);
-		thrust::for_each(GetExecutionPolicy(), It, It + ChildrenIndices.Num(), Check);
-		CUDA_CHECK_LAST_ERROR();
-	}
-	else
-	{
-		for (uint64 Index = 0; Index < ChildrenIndices.Num(); Index++)
-		{
-			Check(Index);
-		}
-	}
+	const auto It = thrust::make_counting_iterator<uint64>(0);
+	thrust::for_each(GetExecutionPolicy<ChildrenIndices.GetMemoryType()>(), It, It + ChildrenIndices.Num(), Check);
+	CUDA_CHECK_LAST_ERROR();
 #endif	
 }
 template void DAGCompression::CheckLevelIndices<FCpuLevel>(const FCpuLevel& Level);

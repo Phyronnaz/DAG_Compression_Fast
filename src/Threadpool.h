@@ -123,6 +123,7 @@ private:
 			if (Tasks.Dequeue(Task))
 			{
 				Task();
+				CUDA_SYNCHRONIZE_STREAM();
 			}
 			else
 			{

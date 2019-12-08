@@ -260,7 +260,7 @@ struct TFixedArray
 		return ArrayData;
 	}
 
-	HOST_DEVICE static EMemoryType GetMemoryType()
+	HOST_DEVICE static constexpr EMemoryType GetMemoryType()
 	{
 		return MemoryType;
 	}

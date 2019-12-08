@@ -9,7 +9,7 @@ int main()
 {
 	cudaDeviceProp Props{};
 	CUDA_CHECKED_CALL cudaGetDeviceProperties(&Props, 0);
-	LOG("CUDA: %d Async Engine", Props.asyncEngineCount);
+	LOG("CUDA: %d Async Engines", Props.asyncEngineCount);
 	
 	FEngine Engine;
 	Engine.Init();
@@ -37,6 +37,8 @@ int main()
 	};
 	FScopedCNMEM CNMEM;
 
+	//DAGCompression::CheckGPU();
+
 	FAABB AABB;
 	FFinalDag Dag;
 
@@ -61,7 +63,7 @@ int main()
 		LOG("");
 
 		MARK("Compression Start");
-#if 0
+#if 1
 		Dag = DAGCompression::Compress_SingleThreaded(Scene, AABB);
 #else
 		Dag = DAGCompression::Compress_MultiThreaded(Scene, AABB);
