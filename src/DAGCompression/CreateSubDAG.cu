@@ -89,7 +89,7 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 	// Shrink if less than 95% of original size
 	if (NumUnique < Fragments.Num() * 0.95)
 	{
-		NewFragments.Free();
+		NewFragments.FreeNow();
 		NewFragments = TGpuArray<uint64>("Fragments", NumUnique);
 		FMemory::CudaMemcpy(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	}
@@ -101,7 +101,7 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 		NewFragments = { Temp.GetData(), uint64(NumUnique) };
 	}
 	
-	Fragments.Free();
+	Fragments.FreeNow();
 	
 	return NewFragments;
 }

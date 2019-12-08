@@ -25,11 +25,12 @@ struct FCpuLevel
 	TCpuArray<FChildrenIndices> ChildrenIndices;
 	TCpuArray<uint64> Hashes;
 
-	inline void Free()
+	template<typename T>
+	inline void Free(T& Allocator)
 	{
-		ChildMasks.Free();
-		ChildrenIndices.Free();
-		Hashes.Free();
+		ChildMasks.Free(Allocator);
+		ChildrenIndices.Free(Allocator);
+		Hashes.Free(Allocator);
 	}
 };
 
@@ -64,11 +65,12 @@ struct FGpuLevel
 		if (LoadHashes) CpuLevel.Hashes.CopyToGPU(Hashes);
 	}
 
-	void Free(bool FreeHashes = true)
+	template<typename T>
+	void Free(T& Allocator, bool FreeHashes = true)
 	{
-		ChildMasks.Free();
-		ChildrenIndices.Free();
-		if (FreeHashes) Hashes.Free();
+		ChildMasks.Free(Allocator);
+		ChildrenIndices.Free(Allocator);
+		if (FreeHashes) Hashes.Free(Allocator);
 	}
 };
 
@@ -78,15 +80,16 @@ struct FCpuDag
 	TCpuArray<uint64> Leaves;
 	TCpuArray<uint32> Colors;
 
-	inline void Free()
+	template<typename T>
+	inline void Free(T& Allocators)
 	{
 		for(auto& Level : Levels)
 		{
-			Level.Free();
+			Level.Free(Allocators);
 		}
 		Levels.clear();
-		Leaves.Free();
-		Colors.Free();
+		Leaves.Free(Allocators);
+		Colors.Free(Allocators);
 	}
 };
 

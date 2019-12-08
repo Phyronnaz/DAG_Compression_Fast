@@ -10,6 +10,8 @@ inline uint32 Merge(
 {
 	PROFILE_FUNCTION_TRACY();
 
+	FScopeAllocator Allocator;
+
 	check(!OutIndicesAToMergedIndices.IsValid());
 	check(!OutIndicesBToMergedIndices.IsValid());
 
@@ -40,9 +42,9 @@ inline uint32 Merge(
 			CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(Storage.Ptr, Storage.Bytes, UniqueFlags.GetData(), UniqueSum.GetData(), NumToMerge, DEFAULT_STREAM);
 			Storage.SyncAndFree();
 		}
-		UniqueFlags.Free();
+		UniqueFlags.Free(Allocator);
 	}
-	KeysAB.Free();
+	KeysAB.Free(Allocator);
 
 	const uint32 NumUniques = GetElement(UniqueSum, UniqueSum.Num() - 1) + 1;
 
@@ -63,8 +65,8 @@ inline uint32 Merge(
 	CheckArrayBounds(OutIndicesAToMergedIndices, 0u, NumUniques - 1);
 	CheckArrayBounds(OutIndicesBToMergedIndices, 0u, NumUniques - 1);
 
-	UniqueSum.Free();
-	Permutation.Free();
+	UniqueSum.Free(Allocator);
+	Permutation.Free(Allocator);
 
 	return NumUniques;
 }
@@ -182,10 +184,12 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 		TGpuArray<uint32> IndicesAToMergedIndices;
 		TGpuArray<uint32> IndicesBToMergedIndices;
 		{
+			FScopeAllocator Allocator;
+			
 			auto LeavesA = A.Leaves.CreateGPU();
 			auto LeavesB = B.Leaves.CreateGPU();
-			A.Leaves.Free();
-			B.Leaves.Free();
+			A.Leaves.Free(Allocator);
+			B.Leaves.Free(Allocator);
 			const uint32 NumMergedLeaves = Merge(
 				LeavesA,
 				LeavesB,
@@ -194,10 +198,10 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 			auto MergedLeaves = TGpuArray<uint64>("MergedLeaves", NumMergedLeaves);
 			Scatter(LeavesA, IndicesAToMergedIndices, MergedLeaves);
 			Scatter(LeavesB, IndicesBToMergedIndices, MergedLeaves);
-			LeavesA.Free();
-			LeavesB.Free();
+			LeavesA.Free(Allocator);
+			LeavesB.Free(Allocator);
 			MergedCpuDag.Leaves = MergedLeaves.CreateCPU();
-			MergedLeaves.Free();
+			MergedLeaves.Free(Allocator);
 		}
 		PreviousIndicesAToMergedIndices = IndicesAToMergedIndices;
 		PreviousIndicesBToMergedIndices = IndicesBToMergedIndices;
@@ -208,6 +212,8 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 
 	for (int32 LevelIndex = NumLevels - 1; LevelIndex >= 0; LevelIndex--)
 	{
+		FScopeAllocator Allocator;
+		
 		FCpuLevel& LevelA = A.Levels[LevelIndex];
 		FCpuLevel& LevelB = B.Levels[LevelIndex];
 
@@ -217,8 +223,8 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 			
 			auto HashesA = LevelA.Hashes.CreateGPU();
 			auto HashesB = LevelB.Hashes.CreateGPU();
-			LevelA.Hashes.Free();
-			LevelB.Hashes.Free();
+			LevelA.Hashes.Free(Allocator);
+			LevelB.Hashes.Free(Allocator);
 
 			TGpuArray<uint32> IndicesAToMergedIndices;
 			TGpuArray<uint32> IndicesBToMergedIndices;
@@ -236,29 +242,31 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 				Scatter(HashesA, IndicesAToMergedIndices, MergedHashes);
 				Scatter(HashesB, IndicesBToMergedIndices, MergedHashes);
 
-				HashesA.Free();
-				HashesB.Free();
+				HashesA.Free(Allocator);
+				HashesB.Free(Allocator);
 
 				MergedLevel.Hashes = MergedHashes.CreateCPU();
-				MergedHashes.Free();
+				MergedHashes.Free(Allocator);
 			}
 
 			{
 				auto MergedChildMasks = TGpuArray<uint8>("MergedChildMasks", NumMerged);
-
+				
+				// TODO async copy
+				
 				auto ChildMasksA = LevelA.ChildMasks.CreateGPU();
 				auto ChildMasksB = LevelB.ChildMasks.CreateGPU();
-				LevelA.ChildMasks.Free();
-				LevelB.ChildMasks.Free();
+				LevelA.ChildMasks.Free(Allocator);
+				LevelB.ChildMasks.Free(Allocator);
 
 				Scatter(ChildMasksA, IndicesAToMergedIndices, MergedChildMasks);
 				Scatter(ChildMasksB, IndicesBToMergedIndices, MergedChildMasks);
 
-				ChildMasksA.Free();
-				ChildMasksB.Free();
+				ChildMasksA.Free(Allocator);
+				ChildMasksB.Free(Allocator);
 
 				MergedLevel.ChildMasks = MergedChildMasks.CreateCPU();
-				MergedChildMasks.Free();
+				MergedChildMasks.Free(Allocator);
 			}
 
 			{
@@ -280,25 +288,25 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 
 				auto ChildrenIndicesA = LevelA.ChildrenIndices.CreateGPU();
 				auto ChildrenIndicesB = LevelB.ChildrenIndices.CreateGPU();
-				LevelA.ChildrenIndices.Free();
-				LevelB.ChildrenIndices.Free();
+				LevelA.ChildrenIndices.Free(Allocator);
+				LevelB.ChildrenIndices.Free(Allocator);
 
 				ScatterWithTransform(ChildrenIndicesA, TransformA, IndicesAToMergedIndices, MergedChildrenIndices);
 				ScatterWithTransform(ChildrenIndicesB, TransformB, IndicesBToMergedIndices, MergedChildrenIndices);
 
-				ChildrenIndicesA.Free();
-				ChildrenIndicesB.Free();
+				ChildrenIndicesA.Free(Allocator);
+				ChildrenIndicesB.Free(Allocator);
 
 				MergedLevel.ChildrenIndices = MergedChildrenIndices.CreateCPU();
-				MergedChildrenIndices.Free();
+				MergedChildrenIndices.Free(Allocator);
 			}
 
 			CheckLevelIndices(MergedLevel);
 			CheckIsSorted(MergedLevel.Hashes);
 			MergedCpuDag.Levels[LevelIndex] = MergedLevel;
 
-			PreviousIndicesAToMergedIndices.Free();
-			PreviousIndicesBToMergedIndices.Free();
+			PreviousIndicesAToMergedIndices.Free(Allocator);
+			PreviousIndicesBToMergedIndices.Free(Allocator);
 			PreviousIndicesAToMergedIndices = IndicesAToMergedIndices;
 			PreviousIndicesBToMergedIndices = IndicesBToMergedIndices;
 		}
@@ -307,12 +315,12 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 			if (PreviousIndicesAToMergedIndices_CPU.Num() == 0 && PreviousIndicesAToMergedIndices.Num() > 0)
 			{
 				PreviousIndicesAToMergedIndices_CPU = PreviousIndicesAToMergedIndices.CreateCPU();
-				PreviousIndicesAToMergedIndices.Free();
+				PreviousIndicesAToMergedIndices.Free(Allocator);
 			}
 			if (PreviousIndicesBToMergedIndices_CPU.Num() == 0 && PreviousIndicesBToMergedIndices.Num() > 0)
 			{
 				PreviousIndicesBToMergedIndices_CPU = PreviousIndicesBToMergedIndices.CreateCPU();
-				PreviousIndicesBToMergedIndices.Free();
+				PreviousIndicesBToMergedIndices.Free(Allocator);
 			}
 			
 			const auto HashesA = LevelA.Hashes;
@@ -365,20 +373,20 @@ FCpuDag DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B)
 			CheckIsSorted(MergedLevel.Hashes);
 			MergedCpuDag.Levels[LevelIndex] = MergedLevel;
 
-			PreviousIndicesAToMergedIndices_CPU.Free();
-			PreviousIndicesBToMergedIndices_CPU.Free();
+			PreviousIndicesAToMergedIndices_CPU.Free(Allocator);
+			PreviousIndicesBToMergedIndices_CPU.Free(Allocator);
 			PreviousIndicesAToMergedIndices_CPU = IndicesAToMergedIndices;
 			PreviousIndicesBToMergedIndices_CPU = IndicesBToMergedIndices;
 
-			LevelA.Free();
-			LevelB.Free();
+			LevelA.Free(Allocator);
+			LevelB.Free(Allocator);
 		}
 	}
 
-	PreviousIndicesAToMergedIndices.Free();
-	PreviousIndicesBToMergedIndices.Free();
-	PreviousIndicesAToMergedIndices_CPU.Free();
-	PreviousIndicesBToMergedIndices_CPU.Free();
+	PreviousIndicesAToMergedIndices.FreeNow();
+	PreviousIndicesBToMergedIndices.FreeNow();
+	PreviousIndicesAToMergedIndices_CPU.FreeNow();
+	PreviousIndicesBToMergedIndices_CPU.FreeNow();
 
 	return MergedCpuDag;
 }
@@ -408,7 +416,7 @@ std::thread DAGCompression::MergeColors(std::vector<TCpuArray<uint32>> Colors, T
 				const auto Task = [Index, &MergedColors, &Offsets, &Colors]()
 				{
 					std::memcpy(&MergedColors[Offsets[Index]], Colors[Index].GetData(), Colors[Index].SizeInBytes());
-					const_cast<TCpuArray<uint32>&>(Colors[Index]).Free();
+					const_cast<TCpuArray<uint32>&>(Colors[Index]).FreeNow();
 				};
 				ThreadPool.Enqueue(Task);
 			}

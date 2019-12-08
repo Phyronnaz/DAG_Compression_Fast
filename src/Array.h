@@ -235,11 +235,17 @@ struct TFixedArray
 		}
 	}
 
-	HOST void Free()
+	template<typename T>
+	HOST void Free(T& Allocator)
 	{
-		FMemory::Free(ArrayData);
+		Allocator.Free(ArrayData);
 		ArrayData = nullptr;
 		ArraySize = 0;
+	}
+	HOST void FreeNow()
+	{
+		FImmediateAllocator Allocator;
+		Free(Allocator);
 	}
 	HOST_DEVICE void Reset()
 	{

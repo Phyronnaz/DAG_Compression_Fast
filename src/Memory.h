@@ -174,3 +174,39 @@ public:
 private:
 	T* Ptr = nullptr;
 };
+
+struct FScopeAllocator
+{
+	FScopeAllocator() = default;
+	~FScopeAllocator()
+	{
+		PROFILE_FUNCTION_TRACY();
+		CUDA_CHECK_LAST_ERROR();
+		
+		for (void* Ptr : PtrsToFree)
+		{
+			FMemory::Free(Ptr);
+		}
+	}
+
+	template<typename T>
+	void Free(T* Ptr)
+	{
+		CUDA_CHECK_LAST_ERROR();
+		PtrsToFree.push_back(reinterpret_cast<void*>(Ptr));
+	}
+
+private:
+	std::vector<void*> PtrsToFree;
+};
+
+struct FImmediateAllocator
+{
+	template<typename T>
+	static void Free(T* Ptr)
+	{
+		FMemory::Free(Ptr);
+	}
+};
+
+// TODO async copy
