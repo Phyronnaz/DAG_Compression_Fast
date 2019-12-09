@@ -93,10 +93,10 @@ int main()
 	TCpuArray<uint32> DagCpu;
 	Reader.Read(DagCpu, "DagCpu");
 
-	Dag = DagCpu.CreateGPU();
+	Dag.Dag = DagCpu.CreateGPU();
 #endif
 
-#if 0
+#if 1
 	Engine.Loop(AABB, Dag);
 #endif
 	

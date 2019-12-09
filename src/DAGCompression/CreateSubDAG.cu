@@ -43,6 +43,7 @@ void DAGCompression::ComputeHashes(FGpuLevel& Level, const TGpuArray<uint64>& Lo
 TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments)
 {
 	PROFILE_FUNCTION();
+	SCOPED_BANDWIDTH_TRACY(Fragments.Num());
 
 	auto NewFragments = TGpuArray<uint64>("Fragments", Fragments.Num());
 
@@ -328,7 +329,7 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>&
 	return OutLevel;
 }
 
-FCpuDag DAGCompression::CreateSubDAG(TGpuArray<uint64>& InFragments)
+FCpuDag DAGCompression::CreateSubDAG(TGpuArray<uint64> InFragments)
 {
 	PROFILE_FUNCTION();
 	
@@ -340,13 +341,7 @@ FCpuDag DAGCompression::CreateSubDAG(TGpuArray<uint64>& InFragments)
 		return CpuDag;
 	}
 
-	TGpuArray<uint64> Fragments;
-
-	{
-		auto InFragmentsCopy = TGpuArray<uint64>("FragmentsCopy", InFragments.Num());
-		FMemory::CudaMemcpy(InFragmentsCopy.GetData(), InFragments.GetData(), InFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
-		Fragments = SortFragmentsAndRemoveDuplicates(std::move(InFragmentsCopy));
-	}
+	TGpuArray<uint64> Fragments = SortFragmentsAndRemoveDuplicates(std::move(InFragments));
 	
 #if ENABLE_COLORS
 	auto Colors = ExtractColorsAndFixFragments(Fragments);

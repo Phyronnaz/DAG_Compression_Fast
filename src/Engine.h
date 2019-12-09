@@ -7,7 +7,6 @@
 #include <string>
 #include <chrono>
 
-#include "Utils/View.h"
 #include "DAGTracer.h"
 #include "DAGCompression/DAGCompression.h"
 
@@ -53,9 +52,7 @@ public:
 
 struct FAppState
 {
-	FView Camera;
-	glm::dvec2 OldMouse{ 0, 0 };
-	glm::dvec2 NewMouse{ 0, 0 };
+	FCameraView Camera;
 	bool Loop = true;
 	FTimer FrameTimer;
 	uint32 DebugLevel = 0xFFFFFFFF;
@@ -76,14 +73,7 @@ struct FAppState
 			Loop = false;
 		}
 		
-		const float MoveScaleFactor{ 1000.0f * DeltaTime };
 		if (IsPressed(GLFW_KEY_ESCAPE)) { Loop = false; }
-		if (IsPressed(GLFW_KEY_W)) { Camera.Position += MoveScaleFactor * Camera.Rotation[2]; }
-		if (IsPressed(GLFW_KEY_S)) { Camera.Position -= MoveScaleFactor * Camera.Rotation[2]; }
-		if (IsPressed(GLFW_KEY_D)) { Camera.Position += MoveScaleFactor * Camera.Rotation[0]; }
-		if (IsPressed(GLFW_KEY_A)) { Camera.Position -= MoveScaleFactor * Camera.Rotation[0]; }
-		if (IsPressed(GLFW_KEY_E)) { Camera.Position += MoveScaleFactor * Camera.Rotation[1]; }
-		if (IsPressed(GLFW_KEY_Q)) { Camera.Position -= MoveScaleFactor * Camera.Rotation[1]; }
 
 		if (IsPressed(GLFW_KEY_1)) { DebugLevel = 0; }
 		if (IsPressed(GLFW_KEY_2)) { DebugLevel = 1; }
@@ -99,34 +89,53 @@ struct FAppState
 		if (IsPressed(GLFW_KEY_C)) { DebugLevel = 0xFFFFFFFD; }
 		if (IsPressed(GLFW_KEY_N)) { DebugLevel = 0xFFFFFFFC; }
 		
+        double speed = 100 * DeltaTime;
+		double rotationSpeed = 2 * DeltaTime;
 
-		glfwGetCursorPos(MainWindow, &NewMouse.x, &NewMouse.y);
-		const bool LeftDown = glfwGetMouseButton(MainWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-		const bool MiddleDown = glfwGetMouseButton(MainWindow, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
-		const bool RightDown = glfwGetMouseButton(MainWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+		if (IsPressed(GLFW_KEY_LEFT_SHIFT))
+			speed *= 10;
 
-		const glm::vec2 DeltaMouse = NewMouse - OldMouse;
-		
-		const float MouseScaleFactor{ 0.25f * DeltaTime };
-		if (LeftDown && RightDown) 
-		{
-			Camera.Position += DeltaMouse.y * MouseScaleFactor * Camera.Rotation[2];
-		}
-		else if (LeftDown) 
-		{
-			Camera.Pitch(-DeltaMouse.y * MouseScaleFactor);
-			Camera.Yaw(-DeltaMouse.x * MouseScaleFactor);
-		}
-		else if (RightDown) 
-		{
-			Camera.Roll(-DeltaMouse.x * MouseScaleFactor);
-		}
-		else if (MiddleDown)
-		{
-			Camera.Position -= DeltaMouse.y * MouseScaleFactor * Camera.Rotation[1];
-			Camera.Position += DeltaMouse.x * MouseScaleFactor * Camera.Rotation[0];
-		}
-		OldMouse = NewMouse;
+		if (IsPressed(GLFW_KEY_W))
+        {
+            Camera.Position += speed * Camera.Forward();
+        }
+		if (IsPressed(GLFW_KEY_S))
+        {
+			Camera.Position -= speed * Camera.Forward();
+        }
+		if (IsPressed(GLFW_KEY_D))
+        {
+			Camera.Position += speed * Camera.Right();
+        }
+		if (IsPressed(GLFW_KEY_A))
+        {
+			Camera.Position -= speed * Camera.Right();
+        }
+		if (IsPressed(GLFW_KEY_SPACE))
+        {
+            Camera.Position += speed * Camera.Up();
+        }
+        if (IsPressed(GLFW_KEY_LEFT_CONTROL))
+        {
+            Camera.Position -= speed * Camera.Up();
+        }
+
+        if (IsPressed(GLFW_KEY_RIGHT) || IsPressed(GLFW_KEY_E))
+        {
+            Camera.Rotation *= Matrix3x3::FromQuaternion(Quaternion::FromAngleAxis(rotationSpeed, Vector3::Up()));
+        }
+        if (IsPressed(GLFW_KEY_LEFT) || IsPressed(GLFW_KEY_Q))
+        {
+            Camera.Rotation *= Matrix3x3::FromQuaternion(Quaternion::FromAngleAxis(-rotationSpeed, Vector3::Up()));
+        }
+        if (IsPressed(GLFW_KEY_DOWN))
+        {
+            Camera.Rotation *= Matrix3x3::FromQuaternion(Quaternion::FromAngleAxis(rotationSpeed, Camera.Right()));
+        }
+        if (IsPressed(GLFW_KEY_UP))
+        {
+            Camera.Rotation *= Matrix3x3::FromQuaternion(Quaternion::FromAngleAxis(-rotationSpeed, Camera.Right()));
+        }
 	}
 };
 
@@ -258,7 +267,6 @@ struct FEngine
 		const uint32 Height = ScreenDim.y;
 		FDAGTracer DagTracer(Width, Height);
 		FAppState App;
-		App.Camera.LookAt(glm::vec3{ 0.0f, 1.0f, 0.0f }, glm::vec3{ 0.0f, 0.0f, 0.0f });
 		while (App.Loop)
 		{
 			App.FrameTimer.Start();

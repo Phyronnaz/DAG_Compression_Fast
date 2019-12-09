@@ -44,6 +44,8 @@ public:
 	
 private:
 	const char* const Name;
+	const FTask InitThread;
+	const FTask DestroyThread;
 	
 	std::vector<std::thread> Threads;
 	TSafeQueue<FTask> Tasks;
@@ -57,8 +59,14 @@ private:
 	std::condition_variable_any OnAllWaiting;
 	
 public:
-	explicit FThreadPool(int32 NumThreads, const char* Name)
+	explicit FThreadPool(
+		int32 NumThreads,
+		const char* Name,
+		FTask InitThread = []() {},
+		FTask DestroyThread = []() {})
 		: Name(Name)
+		, InitThread(InitThread)
+		, DestroyThread(DestroyThread)
 	{
 		PROFILE_FUNCTION();
 		
@@ -87,7 +95,7 @@ public:
 		}
 		else
 		{
-			const auto ShouldWakeup = [this]() { return WaitingThreads == Threads.size(); };
+			const auto ShouldWakeup = [this]() { return Tasks.IsEmpty() && WaitingThreads == Threads.size(); };
 			FUniqueLock Lock(OnAllWaitingMutex);
 			OnAllWaiting.wait(Lock, ShouldWakeup);
 		}
@@ -116,6 +124,8 @@ private:
 	{
 		PROFILE_FUNCTION();
 		NAME_THREAD(Name);
+
+		InitThread();
 		
 		while (!Stop)
 		{
@@ -137,5 +147,7 @@ private:
 				WaitingThreads--;
 			}
 		}
+
+		DestroyThread();
 	}
 };

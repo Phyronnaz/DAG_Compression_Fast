@@ -1087,6 +1087,18 @@
     <ClInclude Include="src\Engine.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\gmath\Matrix3x3.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gmath\Quaternion.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gmath\Vector2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gmath\Vector3.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="src\glm\detail\func_common.inl">
@@ -1491,6 +1503,7 @@
     <CudaCompile Include="src\DAGCompression\MergeDAG.cu" />
     <CudaCompile Include="src\DAGCompression\CheckDAG.cu" />
     <CudaCompile Include="src\DAGCompression\CheckGPU.cu" />
+    <CudaCompile Include="src\DAGCompression\GenerateFragments.cu" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="src\Array.natvis" />

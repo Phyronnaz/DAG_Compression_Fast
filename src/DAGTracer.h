@@ -4,6 +4,32 @@
 #include "CudaGLBuffer.h"
 #include "CudaMath.h"
 #include "Array.h"
+#include "Utils/Aabb.h"
+
+#include "gmath/Vector3.h"
+#include "gmath/Matrix3x3.h"
+
+struct FCameraView
+{
+	static constexpr float Fov = 60.f;
+
+	Vector3 Position = { 0.f, 0.f, 0.f };
+	Matrix3x3 Rotation = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+
+	inline Vector3 Right() const
+	{
+		// No idea why minus, but else it's inverted
+		return { -Rotation.D00, -Rotation.D01, -Rotation.D02 };
+	}
+	inline Vector3 Up() const
+	{
+		return { Rotation.D10, Rotation.D11, Rotation.D12 };
+	}
+	inline Vector3 Forward() const
+	{
+		return { Rotation.D20, Rotation.D21, Rotation.D22 };
+	}
+};
 
 class FDAGTracer
 {
@@ -33,20 +59,19 @@ public:
 		const TGpuArray<uint32>& Colors, 
 		const TGpuArray<uint64>& EnclosedLeaves);
 
-	template<typename T1, typename T2>
 	inline static TracePathsParams GetTraceParams(
 		uint32 DebugLevel,
-		const T1& View, 
+		const FCameraView& View, 
 		const uint32 Width, 
 		const uint32 Height,
-		const T2& AABB)
+		const FAABB& AABB)
 	{
-		const auto Vector3ToDouble3 = [](auto v) { return make_double3(v.x, v.y, v.z); };
+		const auto Vector3ToDouble3 = [](auto v) { return make_double3(v.X, v.Y, v.Z); };
 		
 		const double3 Position  = Vector3ToDouble3(View.Position);
-		const double3 Direction = Vector3ToDouble3(View.Rotation[2]);
-		const double3 Up        = Vector3ToDouble3(View.Rotation[1]);
-		const double3 Right     = Vector3ToDouble3(View.Rotation[0]);
+		const double3 Direction = Vector3ToDouble3(View.Forward());
+		const double3 Up        = Vector3ToDouble3(View.Up());
+		const double3 Right     = Vector3ToDouble3(View.Right());
 
 		const double3 BoundsMin = Vector3ToDouble3(AABB.Min);
 		const double3 BoundsMax = Vector3ToDouble3(AABB.Max);
@@ -54,16 +79,16 @@ public:
 		const double Fov = View.Fov / 2.0 * (3.14159265358979323846 / 180.);
 		const double AspectRatio = double(Width) / double(Height);
 		
-		const double3 X = Right     * sin(Fov) * AspectRatio;
-		const double3 Y = Up        * sin(Fov);
-		const double3 Z = Direction * cos(Fov);
+		const double3 X = Right     * std::sin(Fov) * AspectRatio;
+		const double3 Y = Up        * std::sin(Fov);
+		const double3 Z = Direction * std::cos(Fov);
 
 		const double3 BottomLeft  = Position + Z - Y - X;
 		const double3 BottomRight = Position + Z - Y + X;
 		const double3 TopLeft     = Position + Z + Y - X;
 
 		const double3 Translation = -BoundsMin;
-		const double3 Scale = make_double3(double(1 << LEVELS)) / (BoundsMax - BoundsMin);
+		const double3 Scale = make_double3(double(1u << LEVELS)) / (BoundsMax - BoundsMin);
 
 		const double3 FinalPosition    = (Position    + Translation) * Scale;
 		const double3 FinalBottomLeft  = (BottomLeft  + Translation) * Scale;
@@ -72,19 +97,19 @@ public:
 		const double3 Dx = (FinalBottomRight - FinalBottomLeft) * (1.0 / Width);
 		const double3 Dy = (FinalTopLeft     - FinalBottomLeft) * (1.0 / Height);
 
-		TracePathsParams params;
+		TracePathsParams Params;
 
-		params.DebugLevel = DebugLevel;
+		Params.DebugLevel = DebugLevel;
 		
-		params.width = Width;
-		params.height = Height;
+		Params.width = Width;
+		Params.height = Height;
 
-		params.cameraPosition = FinalPosition;
-		params.rayMin = FinalBottomLeft;
-		params.rayDDx = Dx;
-		params.rayDDy = Dy;
+		Params.cameraPosition = FinalPosition;
+		Params.rayMin = FinalBottomLeft;
+		Params.rayDDx = Dx;
+		Params.rayDDy = Dy;
 
-		return params;
+		return Params;
 	}
 	
 	inline GLuint GetColorsImage() const

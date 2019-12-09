@@ -22,7 +22,8 @@ template<typename T> constexpr HOST_DEVICE T make_vector3(const decltype(T::x) x
 #define BIN_VECTOR_OP(T, OP) \
 HOST_DEVICE constexpr T operator OP (const decltype(T::x) a, const T& b) { return make_vector3<T>(a OP b.x, a OP b.y, a OP b.z); } \
 HOST_DEVICE constexpr T operator OP (const T& a, const decltype(T::x) b) { return make_vector3<T>(a.x OP b, a.y OP b, a.z OP b); } \
-HOST_DEVICE constexpr T operator OP (const T& a, const T& b) { return make_vector3<T>(a.x OP b.x, a.y OP b.y, a.z OP b.z); }
+HOST_DEVICE constexpr T operator OP (const T& a, const T& b) { return make_vector3<T>(a.x OP b.x, a.y OP b.y, a.z OP b.z); } \
+HOST_DEVICE constexpr T& operator OP= (T& a, const T& b) { a = a OP b; return a; }
 
 #define VECTOR_OP(T) \
 BIN_VECTOR_OP(T, +) \

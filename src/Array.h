@@ -247,6 +247,11 @@ struct TFixedArray
 		FImmediateAllocator Allocator;
 		Free(Allocator);
 	}
+	HOST void Free()
+	{
+		// TODO
+		FreeNow();
+	}
 	HOST_DEVICE void Reset()
 	{
 		ArrayData = nullptr;
@@ -513,7 +518,7 @@ struct TBitArray
 {
 	TBitArray() = default;
 	TBitArray(const char* Name, TSize Size)
-		: Array(Name, Utils::DivideCeil(Size, 32))
+		: Array(Name, Utils::DivideCeil<TSize>(Size, 32))
 	{
 	}
 	

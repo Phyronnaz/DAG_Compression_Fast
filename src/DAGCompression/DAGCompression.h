@@ -2,7 +2,10 @@
 
 #include "Core.h"
 #include "Array.h"
+#include "Utils/Aabb.h"
 
+class FThreadPool;
+class FVoxelizer;
 class FAABB;
 struct FScene;
 
@@ -31,6 +34,12 @@ struct FCpuLevel
 		ChildMasks.Free(Allocator);
 		ChildrenIndices.Free(Allocator);
 		Hashes.Free(Allocator);
+	}
+	
+	void Free()
+	{
+		FImmediateAllocator Allocator;
+		Free(Allocator); // TODO
 	}
 };
 
@@ -72,6 +81,12 @@ struct FGpuLevel
 		ChildrenIndices.Free(Allocator);
 		if (FreeHashes) Hashes.Free(Allocator);
 	}
+	
+	void Free(bool FreeHashes = true)
+	{
+		FImmediateAllocator Allocator;
+		Free(Allocator, FreeHashes); // TODO
+	}
 };
 
 struct FCpuDag
@@ -91,6 +106,12 @@ struct FCpuDag
 		Leaves.Free(Allocators);
 		Colors.Free(Allocators);
 	}
+	
+	void Free()
+	{
+		FImmediateAllocator Allocator;
+		Free(Allocator); // TODO
+	}
 };
 
 struct FFinalDag
@@ -102,10 +123,14 @@ struct FFinalDag
 
 namespace DAGCompression
 {
-	FFinalDag Compress_SingleThreaded(const FScene& Scene, const FAABB& AABB);
-	FFinalDag Compress_MultiThreaded(const FScene& Scene, const FAABB& AABB);
-	
-	FCpuDag CreateSubDAG(TGpuArray<uint64>& Fragments);
+	FFinalDag Compress_SingleThreaded(const FScene& Scene, const FAABB& SceneAABB);
+	FFinalDag Compress_MultiThreaded(const FScene& Scene, const FAABB& SceneAABB);
+
+	std::vector<FAABB> GetAABBs(const FAABB& AABB, int32 NumberOfSplits);
+	void AddParentToFragments(const TGpuArray<uint64>& Src, TGpuArray<uint64>& Dst, uint32 Parent, uint32 ParentLevel);
+
+	// Will free Fragments
+	FCpuDag CreateSubDAG(TGpuArray<uint64> Fragments);
 	FCpuDag MergeDAGs(std::vector<FCpuDag> CpuDags);
 	FFinalDag CreateFinalDAG(FCpuDag CpuDag);
 

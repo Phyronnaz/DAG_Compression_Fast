@@ -6,15 +6,22 @@
 #define DEBUG_GPU_ARRAYS 0
 
 #define ENABLE_COLORS 0
-
-#define LEVELS 14
 #define TOP_LEVEL MAX(LEVELS - 8, 0)
-#define SUBDAG_LEVELS 11
-#define VOXELIZER_MAX_NUM_FRAGMENTS (150 * 1024 * 1024)
+
+#define LEVELS 15
+#define SUBDAG_LEVELS 12
+#define SUBDAG_MAX_NUM_FRAGMENTS (150 * 1024 * 1024)
+
+#define VOXELIZER_LEVELS 10
+#define VOXELIZER_MAX_NUM_FRAGMENTS (10 * 1024 * 1024) // Needs to be as small as possible: larger buffer size leads to 10x slower rasterization
+
+
 #define GPU_MEMORY_ALLOCATED_IN_GB 6.0
-#define MERGE_MIN_NODES_FOR_GPU 50000 // Under this number of node in a level, the CPU will be used
+
+#define MERGE_MIN_NODES_FOR_GPU 50000 // Under this number of nodes in a level, the CPU will be used
 
 #define NUM_MERGE_COLORS_THREADS 4
+
 
 #define NUM_MERGE_THREADS 0
 #define PRINT_DEBUG_INFO 0

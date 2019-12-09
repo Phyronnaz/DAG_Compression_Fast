@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core.h"
+#include "Utils.h"
 
 #pragma push_macro("check")
 #undef check
@@ -20,6 +21,33 @@
 #include "cub/device/device_select.cuh"
 
 #include "moderngpu/kernel_merge.hxx"
+
+#ifdef TRACY_ENABLE
+struct FScopeBandwidthReporter
+{
+	explicit FScopeBandwidthReporter(uint64 Num, tracy::ScopedZone& Zone)
+		: Num(Num)
+		, StartTime(Utils::Seconds())
+		, Zone(Zone)
+	{
+	}
+	~FScopeBandwidthReporter()
+	{
+		CUDA_SYNCHRONIZE_STREAM();
+		char String[1024];
+		const int32 Size = sprintf(String, "%" PRIu64 " elements | %f G/s", Num, Num / (Utils::Seconds() - StartTime) / 1000000000.);
+		checkInfEqual(Size, 1024);
+		Zone.Text(String, Size);
+	}
+
+	const uint64 Num;
+	const double StartTime;
+	tracy::ScopedZone& Zone;
+};
+#define SCOPED_BANDWIDTH_TRACY(Num) FScopeBandwidthReporter __ScopeBandwidthReporter(Num, ___tracy_scoped_zone);
+#else
+#define SCOPED_BANDWIDTH_TRACY(Num)
+#endif
 
 template<EMemoryType MemoryType>
 auto GetExecutionPolicy();

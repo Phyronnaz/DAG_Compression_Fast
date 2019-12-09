@@ -1,5 +1,6 @@
 #include "Voxelizer.h"
 #include "Memory.h"
+#include "GLTFLoader.h"
 #include "Utils/View.h"
 
 #include "glm/gtc/type_ptr.hpp"
@@ -90,28 +91,33 @@ enum class EAxis
 	Z
 };
 
+inline glm::vec3 ToVec3(Vector3 V)
+{
+	return { V.X, V.Y, V.Z };
+}
+
 static FOrthographicView GetCamera(const FAABB& AABB, const EAxis Axis)
 {
 	const glm::vec3 Position =
 		Axis == EAxis::X
-		? AABB.GetCentre() - AABB.GetHalfSize().x * glm::vec3{ 1.f, 0.f, 0.f }
+		? ToVec3(AABB.GetCentre()) - ToVec3(AABB.GetHalfSize()).x * glm::vec3{ 1.f, 0.f, 0.f }
 		: Axis == EAxis::Y
-		? AABB.GetCentre() - AABB.GetHalfSize().y * glm::vec3{ 0.f, 1.f, 0.f }
-	: AABB.GetCentre() - AABB.GetHalfSize().z * glm::vec3{ 0.f, 0.f, 1.f };
+		? ToVec3(AABB.GetCentre()) - ToVec3(AABB.GetHalfSize()).y * glm::vec3{ 0.f, 1.f, 0.f }
+		: ToVec3(AABB.GetCentre()) - ToVec3(AABB.GetHalfSize()).z * glm::vec3{ 0.f, 0.f, 1.f };
 	const glm::vec3 Up =
 		Axis == EAxis::X
 		? glm::vec3{ 0.f, 1.f, 0.f }
 		: Axis == EAxis::Y
 		? glm::vec3{ 0.f, 0.f, 1.f }
-	: glm::vec3{ 1.f, 0.f, 0.f };
+		: glm::vec3{ 1.f, 0.f, 0.f };
 
 	// Figure out clipping planes.
 	const std::array<const glm::vec3, 8> Points
 	{
-		glm::vec3{AABB.Min.x, AABB.Max.y, AABB.Min.z}, glm::vec3{AABB.Min.x, AABB.Max.y, AABB.Max.z},
-		glm::vec3{AABB.Min.x, AABB.Min.y, AABB.Min.z}, glm::vec3{AABB.Min.x, AABB.Min.y, AABB.Max.z},
-		glm::vec3{AABB.Max.x, AABB.Max.y, AABB.Min.z}, glm::vec3{AABB.Max.x, AABB.Max.y, AABB.Max.z},
-		glm::vec3{AABB.Max.x, AABB.Min.y, AABB.Min.z}, glm::vec3{AABB.Max.x, AABB.Min.y, AABB.Max.z}
+		glm::vec3{AABB.Min.X, AABB.Max.Y, AABB.Min.Z}, glm::vec3{AABB.Min.X, AABB.Max.Y, AABB.Max.Z},
+		glm::vec3{AABB.Min.X, AABB.Min.Y, AABB.Min.Z}, glm::vec3{AABB.Min.X, AABB.Min.Y, AABB.Max.Z},
+		glm::vec3{AABB.Max.X, AABB.Max.Y, AABB.Min.Z}, glm::vec3{AABB.Max.X, AABB.Max.Y, AABB.Max.Z},
+		glm::vec3{AABB.Max.X, AABB.Min.Y, AABB.Min.Z}, glm::vec3{AABB.Max.X, AABB.Min.Y, AABB.Max.Z}
 	};
 
 	float MinX = std::numeric_limits<float>::max();
@@ -122,7 +128,7 @@ static FOrthographicView GetCamera(const FAABB& AABB, const EAxis Axis)
 	float MaxZ = std::numeric_limits<float>::lowest();
 
 	FOrthographicView Result;
-	Result.LookAt(Position, AABB.GetCentre(), Up);
+	Result.LookAt(Position, ToVec3(AABB.GetCentre()), Up);
 	{
 		const glm::mat4 ViewMatrix = Result.GetViewMatrix();
 		for (const auto& Point : Points)
@@ -195,8 +201,9 @@ std::vector<std::size_t> GetNodesToRender(const FScene& Scene)
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
-	: SubGridSize(SubGridSize)
+FVoxelizer::FVoxelizer(uint32 TexDim, uint32 SubGridSize, const FScene& Scene)
+	: TexDim(TexDim)
+	, SubGridSize(SubGridSize)
 	, Scene(Scene)
 	, NodesToRender(GetNodesToRender(Scene))
 {
@@ -225,7 +232,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	// Data buffer (pos).
 	glGenBuffers(1, &PositionSSBO);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, PositionSSBO);
-	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64), nullptr, GL_STATIC_DRAW);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64), nullptr, GL_DYNAMIC_DRAW);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
 	// Dummy framebuffer.
@@ -240,7 +247,7 @@ FVoxelizer::FVoxelizer(int32 SubGridSize, const FScene& Scene)
 	CUDA_CHECKED_CALL cudaGraphicsMapResources(1, &CudaPositionResource);
 	CUDA_CHECKED_CALL cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&Positions), &NumBytes, CudaPositionResource);
 
-	FMemory::RegisterCustomAlloc(Positions, "Fragments", TexDim * sizeof(uint64), EMemoryType::GPU);
+	FMemory::RegisterCustomAlloc(Positions, "OpenGL Fragments", TexDim * sizeof(uint64), EMemoryType::GPU);
 }
 
 FVoxelizer::~FVoxelizer()
@@ -249,7 +256,7 @@ FVoxelizer::~FVoxelizer()
 	
 	glDeleteBuffers(1, &FragCtrBuffer);
 	glDeleteBuffers(1, &PositionSSBO);
-	glDeleteBuffers(1, &DummyFBO);
+	glDeleteFramebuffers(1, &DummyFBO);
 
 	CUDA_CHECKED_CALL cudaGraphicsUnmapResources(1, &CudaPositionResource);
 
@@ -281,7 +288,7 @@ TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 		Location = glGetUniformLocation(VoxelizeShader, "grid_dim");
 		glUniform1i(Location, SubGridSize);
 		Location = glGetUniformLocation(VoxelizeShader, "aabb_size");
-		glUniform3fv(Location, 1, value_ptr(AABB.GetHalfSize()));
+		glUniform3fv(Location, 1, value_ptr(ToVec3(AABB.GetHalfSize())));
 
 		glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, FragCtrBuffer);
 		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, PositionSSBO);
@@ -310,7 +317,7 @@ TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 	}
 	glUseProgram(0);
-	checkfAlways(FragCount <= TexDim, "VOXELIZER_MAX_NUM_FRAGMENTS too low: is %u, needs to be >= %u", TexDim, FragCount);
+	checkfAlways(FragCount <= TexDim, "TexDim too low: is %u, needs to be >= %u", TexDim, FragCount);
 	return { Positions, FragCount };
 }
 

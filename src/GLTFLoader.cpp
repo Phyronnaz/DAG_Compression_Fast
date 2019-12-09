@@ -229,7 +229,7 @@ FAABB GetAABB(const FScene& Scene, const FAccessor& Accessor)
 	FAABB AABB = MakeInverseExtremeAABB();
 	for (int32 Index = 0; Index < Accessor.Count; ++Index)
 	{
-		AABB = Combine(AABB, glm::vec3(Buffer[0 + 3 * Index], Buffer[1 + 3 * Index], Buffer[2 + 3 * Index]));
+		AABB = Combine(AABB, Vector3(Buffer[0 + 3 * Index], Buffer[1 + 3 * Index], Buffer[2 + 3 * Index]));
 	}
 	glUnmapBuffer(GL_ARRAY_BUFFER);
 	return AABB;

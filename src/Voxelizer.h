@@ -2,16 +2,17 @@
 
 #include "Core.h"
 #include "GL/glew.h"
-#include "Utils/Aabb.h"
-#include "GLTFLoader.h"
 #include "Array.h"
+
+class FAABB;
+struct FScene;
 
 class FVoxelizer
 {
 public:
-	const int32 SubGridSize;
+	const uint32 TexDim;
+	const uint32 SubGridSize;
 	const FScene& Scene;
-	static constexpr int32 TexDim = VOXELIZER_MAX_NUM_FRAGMENTS;
 
 private:
 	const std::vector<std::size_t> NodesToRender;
@@ -25,7 +26,7 @@ private:
 	uint64* Positions = nullptr;
 
 public:
-	explicit FVoxelizer(int32 SubGridSize, const FScene& Scene);
+	explicit FVoxelizer(uint32 TexDim, uint32 SubGridSize, const FScene& Scene);
 	~FVoxelizer();
 
 	// Array is only valid while the voxelizer object hasn't been destroyed!

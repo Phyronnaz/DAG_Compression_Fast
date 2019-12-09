@@ -5,19 +5,25 @@
 #include "Utils/Aabb.h"
 #include "Voxelizer.h"
 #include "Thread.h"
+#include "Threadpool.h"
 
-inline std::vector<FAABB> GetAABBs(const FAABB& AABB)
+inline void MakeContextCurrent(GLFWwindow* Window)
 {
-	const int32 NumberOfSplits = LEVELS - SUBDAG_LEVELS;
+	PROFILE_FUNCTION();
+	glfwMakeContextCurrent(Window);
+}
+
+std::vector<FAABB> DAGCompression::GetAABBs(const FAABB& AABB, const int32 NumberOfSplits)
+{
 	std::vector<FAABB> AABBs = { AABB };
 	for (int32 Index = 0; Index < NumberOfSplits; Index++) AABBs = SplitAABB(AABBs);
-	checkEqual(AABBs.size(), (1 << (3 * NumberOfSplits)));
+	checkEqual(AABBs.size(), uint64(1) << (3 * NumberOfSplits));
 	return AABBs;
 }
 
-FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAABB& AABB)
+FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAABB& SceneAABB)
 {
-	const auto AABBs = GetAABBs(AABB);
+	const auto AABBs = GetAABBs(SceneAABB, LEVELS - SUBDAG_LEVELS);
 	
 	const double GlobalStartTime = Utils::Seconds();
 	MARK("Start");
@@ -26,34 +32,113 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 
 	NAME_THREAD("Main");
 
+	double TotalGenerateFragmentsEmptyTime = 0;
 	double TotalGenerateFragmentsTime = 0;
 	double TotalCreateDAGTime = 0;
+	double IsEmptyTime = 0;
 	uint64 TotalFragments = 0;
+
+	TCpuArray<bool> IsEmpty;
+	{
+		PROFILE_SCOPE("IsEmpty");
+
+		const double StartTime = Utils::Seconds();
+		
+		const int32 Size = 1u << (LEVELS - VOXELIZER_LEVELS);
+
+		TCpuArray<uint64> Fragments;
+		{
+			FVoxelizer Voxelizer(1 << 20, Size, Scene);
+			Fragments = Voxelizer.GenerateFragments(SceneAABB).CreateCPU();
+		}
+
+		IsEmpty = { "IsEmpty", Size * Size * Size };
+		IsEmpty.MemSet(true);
+		for (uint64 Fragment : Fragments)
+		{
+			IsEmpty[Fragment & 0xFFFFFFFF] = false;
+		}
+
+		IsEmptyTime = Utils::Seconds() - StartTime;
+	}
 
 	std::vector<FCpuDag> DagsToMerge;
 	{
 		PROFILE_SCOPE("Create Dags");
 
-		FVoxelizer Voxelizer(1u << SUBDAG_LEVELS, Scene);
+		FVoxelizer Voxelizer(VOXELIZER_MAX_NUM_FRAGMENTS, 1u << VOXELIZER_LEVELS, Scene);
 		for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
 		{
 			PROFILE_SCOPE("Sub Dag %d", SubDagIndex);
 
+			TGpuArray<uint64> Fragments;
+			const auto SubDagAABB = AABBs[SubDagIndex];
+
 			const double GenerateFragmentsStartTime = Utils::Seconds();
-			auto Fragments = Voxelizer.GenerateFragments(AABBs[SubDagIndex]);
+			if (true)
+			{
+				Fragments = { "Fragments", SUBDAG_MAX_NUM_FRAGMENTS };
+
+				uint64 Num = 0;
+				const auto SubDagAABBs = GetAABBs(SubDagAABB, SUBDAG_LEVELS - VOXELIZER_LEVELS);
+				for (uint32 Index = 0; Index < SubDagAABBs.size(); Index++)
+				{
+					const uint32 GlobalIndex = SubDagIndex * uint32(SubDagAABBs.size()) + Index;
+					if (IsEmpty[GlobalIndex]) continue;
+
+					const auto StartTime = Utils::Seconds();
+					const auto VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABBs[Index]);
+					if (VoxelizerFragments.Num() > 0)
+					{
+						check(!IsEmpty[GlobalIndex]);
+						const uint64 Offset = Num;
+						Num += VoxelizerFragments.Num();
+						TGpuArray<uint64> CudaFragments(Fragments.GetData() + Offset, VoxelizerFragments.Num());
+						AddParentToFragments(VoxelizerFragments, CudaFragments, Index, VOXELIZER_LEVELS);
+						CUDA_SYNCHRONIZE_STREAM();
+					}
+					else
+					{
+						TotalGenerateFragmentsEmptyTime += Utils::Seconds() - StartTime;
+					}
+				}
+				checkfAlways(Num < Fragments.Num(), "SUBDAG_MAX_NUM_FRAGMENTS is %u, needs to be >= to %" PRIu64, SUBDAG_MAX_NUM_FRAGMENTS, Num);
+
+				if (Num == 0)
+				{
+					Fragments.Free();
+				}
+
+				auto Copy = Fragments;
+				Fragments.Reset();
+				Fragments = { Copy.GetData(), Num };
+			}
+			else
+			{
+				checkAlways(VOXELIZER_LEVELS == SUBDAG_LEVELS);
+				auto VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABB);
+				if (VoxelizerFragments.Num() > 0)
+				{
+					Fragments = { "Fragments", VoxelizerFragments.Num() };
+					FMemory::CudaMemcpy(Fragments.GetData(), VoxelizerFragments.GetData(), VoxelizerFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
+					CUDA_SYNCHRONIZE_STREAM();
+				}
+			}
+
 			const double GenerateFragmentsElapsed = Utils::Seconds() - GenerateFragmentsStartTime;
 			TotalGenerateFragmentsTime += GenerateFragmentsElapsed;
 			TotalFragments += Fragments.Num();
-			LOG_DEBUG("GenerateFragments took %fs", GenerateFragmentsElapsed);
+
+			const uint32 NumFragments = Cast<uint32>(Fragments.Num());
 
 			const double CreateDAGStartTime = Utils::Seconds();
-			auto CpuDag = CreateSubDAG(Fragments);
+			auto CpuDag = CreateSubDAG(std::move(Fragments));
 			CUDA_SYNCHRONIZE_STREAM();
 			const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
 			TotalCreateDAGTime += CreateDAGElapsed;
-			LOG_DEBUG("CreateDAG took %fs", CreateDAGElapsed);
 
-			LOG("Sub Dag %u/%u %" PRIu64 " fragments", SubDagIndex + 1, uint32(AABBs.size()), Fragments.Num());
+			LOG("Sub Dag %u/%u %u fragments", SubDagIndex + 1, uint32(AABBs.size()), NumFragments);
+			
 			DagsToMerge.push_back(CpuDag);
 		}
 	}
@@ -78,7 +163,6 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 		CUDA_SYNCHRONIZE_STREAM();
 	}
 	const double MergeDagsElapsed = Utils::Seconds() - MergeDagsStartTime;
-	LOG_DEBUG("MergeDags took %fs", MergeDagsElapsed);
 
 	MARK("CreateFinalDag");
 
@@ -86,7 +170,6 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	const auto FinalDag = DAGCompression::CreateFinalDAG(std::move(MergedDag));
 	CUDA_SYNCHRONIZE_STREAM();
 	const double CreateFinalDAGElapsed = Utils::Seconds() - CreateFinalDAGStartTime;
-	LOG_DEBUG("CreateFinalDAG took %fs", CreateFinalDAGElapsed);
 
 	const double TotalElapsed = Utils::Seconds() - GlobalStartTime;
 	MARK("Done");
@@ -96,7 +179,9 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	LOG("");
 	LOG("############################################################");
 	LOG("Total elapsed: %fs", TotalElapsed);
+	LOG("IsEmpty: %fs", IsEmptyTime);
 	LOG("Total GenerateFragments: %fs", TotalGenerateFragmentsTime);
+	LOG("Total GenerateFragmentsEmpty: %fs", TotalGenerateFragmentsEmptyTime);
 	LOG("Total CreateDAG: %fs", TotalCreateDAGTime);
 	LOG("MergeDags: %fs", MergeDagsElapsed);
 	LOG("CreateFinalDAG: %fs", CreateFinalDAGElapsed);
@@ -133,27 +218,21 @@ inline auto GetResultLambda_Prefetch(T1& Thread, T2 MaxSize)
 	};
 }
 
-inline void MakeContextCurrent(GLFWwindow* Window)
-{
-	PROFILE_FUNCTION();
-	glfwMakeContextCurrent(Window);
-}
-
-FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAABB& AABB)
+FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAABB& SceneAABB)
 {
 	cudaProfilerStart();
 	MARK("Start");
 	const double GlobalStartTime = Utils::Seconds();
 	std::atomic<uint64> TotalFragments{ 0 };
 	
-	FVoxelizer Voxelizer(1 << SUBDAG_LEVELS, Scene);
+	FVoxelizer Voxelizer(SUBDAG_MAX_NUM_FRAGMENTS, 1 << SUBDAG_LEVELS, Scene);
 	auto* const MainWindow = glfwGetCurrentContext();
 	MakeContextCurrent(nullptr);
 
 	FFinalDag FinalDag;
 	// Scope so that the threads are destroyed before reaching the next glfwMakeContextCurrent
 	{
-		const auto AABBs = GetAABBs(AABB);
+		const auto AABBs = GetAABBs(SceneAABB, LEVELS - SUBDAG_LEVELS);
 #if ENABLE_COLORS
 		std::vector<TCpuArray<uint32>> SubDagColors(AABBs.size());
 		std::atomic<uint32> NumSubDagColorsFinished{ 0 };
