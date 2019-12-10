@@ -621,29 +621,3 @@ inline void MakeSequence(TGpuArray<T>& Array, T Init = 0)
 	
 	thrust::sequence(GetExecutionPolicy<EMemoryType::GPU>(), Array.GetData(), Array.GetData() + Array.Num(), Init);
 }
-
-struct FTempStorage
-{
-	void* Ptr = nullptr;
-	size_t Bytes = 0;
-
-	FTempStorage()
-	{
-		CUDA_CHECK_LAST_ERROR();
-	}
-
-	inline void Allocate()
-	{
-		CUDA_CHECK_LAST_ERROR();
-		check(Bytes > 0);
-		CUDA_CHECKED_CALL cnmemMalloc(&Ptr, Bytes, 0);
-	}
-	inline void SyncAndFree()
-	{
-		CUDA_CHECK_LAST_ERROR();
-		CUDA_SYNCHRONIZE_STREAM();
-		CUDA_CHECKED_CALL cnmemFree(Ptr, 0);
-		Ptr = nullptr;
-		Bytes = 0;
-	}
-};

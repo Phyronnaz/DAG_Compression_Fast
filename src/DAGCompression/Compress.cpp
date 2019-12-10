@@ -6,6 +6,7 @@
 #include "Voxelizer.h"
 #include "Thread.h"
 #include "Threadpool.h"
+#include "CudaMath.h"
 
 inline void MakeContextCurrent(GLFWwindow* Window)
 {
@@ -24,169 +25,189 @@ std::vector<FAABB> DAGCompression::GetAABBs(const FAABB& AABB, const int32 Numbe
 FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAABB& SceneAABB)
 {
 	const auto AABBs = GetAABBs(SceneAABB, LEVELS - SUBDAG_LEVELS);
-	
-	const double GlobalStartTime = Utils::Seconds();
-	MARK("Start");
 
-	cudaProfilerStart();
+	DECLARE_TIME(TotalTime);
+	DECLARE_TIME(IsEmptyTime);
+	DECLARE_TIME(CreateDagsTime);
+	DECLARE_TIME(GenerateFragmentsTime);
+	DECLARE_TIME(AddParentToFragmentsTime);
+	DECLARE_TIME(CreateSubDagTime);
+	DECLARE_TIME(SortFragmentsTime);
+	DECLARE_TIME(MergeTime);
+	DECLARE_TIME(CreateFinalDagTime);
 
-	NAME_THREAD("Main");
-
-	double TotalGenerateFragmentsEmptyTime = 0;
-	double TotalGenerateFragmentsTime = 0;
-	double TotalCreateDAGTime = 0;
-	double IsEmptyTime = 0;
 	uint64 TotalFragments = 0;
+	uint64 EmptySubDags = 0;
 
-	TCpuArray<bool> IsEmpty;
+	FFinalDag FinalDag;
 	{
-		PROFILE_SCOPE("IsEmpty");
+		SCOPE_TIME(TotalTime);
 
-		const double StartTime = Utils::Seconds();
-		
-		const int32 Size = 1u << (LEVELS - VOXELIZER_LEVELS);
-
-		TCpuArray<uint64> Fragments;
+		MARK("Start");
+		cudaProfilerStart();
+		NAME_THREAD("Main");
+		TCpuArray<bool> IsEmpty;
 		{
-			FVoxelizer Voxelizer(1 << 20, Size, Scene);
-			Fragments = Voxelizer.GenerateFragments(SceneAABB).CreateCPU();
-		}
-
-		IsEmpty = { "IsEmpty", Size * Size * Size };
-		IsEmpty.MemSet(true);
-		for (uint64 Fragment : Fragments)
-		{
-			IsEmpty[Fragment & 0xFFFFFFFF] = false;
-		}
-
-		IsEmptyTime = Utils::Seconds() - StartTime;
-	}
-
-	std::vector<FCpuDag> DagsToMerge;
-	{
-		PROFILE_SCOPE("Create Dags");
-
-		FVoxelizer Voxelizer(VOXELIZER_MAX_NUM_FRAGMENTS, 1u << VOXELIZER_LEVELS, Scene);
-		for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
-		{
-			PROFILE_SCOPE("Sub Dag %d", SubDagIndex);
-
-			TGpuArray<uint64> Fragments;
-			const auto SubDagAABB = AABBs[SubDagIndex];
-
-			const double GenerateFragmentsStartTime = Utils::Seconds();
-			if (true)
+			PROFILE_SCOPE("IsEmpty");
+			SCOPE_TIME(IsEmptyTime);
+			
+			const int32 Size = 1u << (LEVELS - VOXELIZER_LEVELS);
+			TCpuArray<uint64> Fragments;
 			{
-				Fragments = { "Fragments", SUBDAG_MAX_NUM_FRAGMENTS };
-
-				uint64 Num = 0;
-				const auto SubDagAABBs = GetAABBs(SubDagAABB, SUBDAG_LEVELS - VOXELIZER_LEVELS);
-				for (uint32 Index = 0; Index < SubDagAABBs.size(); Index++)
+				FVoxelizer Voxelizer(1 << 20, Size, Scene);
+				auto OpenGlFragments = Voxelizer.GenerateFragments(SceneAABB);
+				auto GpuFragments = OpenGlFragments.Clone();
+				GpuFragments = SortFragmentsAndRemoveDuplicates(std::move(GpuFragments));
+				Fragments = GpuFragments.CreateCPU();
+				GpuFragments.Free();
+			}
+			IsEmpty = { "IsEmpty", Size * Size * Size };
+			IsEmpty.MemSet(true);
+			for (uint64 Fragment : Fragments)
+			{
+				const uint64 MortonCode = Fragment & ((uint64(1) << 40) - 1); // Remove colors
+				const uint3 Position = Utils::MortonDecode64<uint3>(MortonCode);
+				// Add neighbors to avoid false positives
+				for (int32 X = -1; X < 2; X++)
 				{
-					const uint32 GlobalIndex = SubDagIndex * uint32(SubDagAABBs.size()) + Index;
-					if (IsEmpty[GlobalIndex]) continue;
+					for (int32 Y = -1; Y < 2; Y++)
+					{
+						for (int32 Z = -1; Z < 2; Z++)
+						{
+							const int3 P = make_int3(Position) + make_int3(X, Y, Z);
+							if (make_int3(0) <= P && P < make_int3(Size))
+							{
+								IsEmpty[Utils::MortonEncode64(P.x, P.y, P.z)] = false;
+							}
+						}
+					}
+				}
+			}
+		}
+		std::vector<FCpuDag> DagsToMerge;
+		{
+			PROFILE_SCOPE("Create Dags");
+			SCOPE_TIME(CreateDagsTime);
 
-					const auto StartTime = Utils::Seconds();
-					const auto VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABBs[Index]);
+			FVoxelizer Voxelizer(VOXELIZER_MAX_NUM_FRAGMENTS, 1u << VOXELIZER_LEVELS, Scene);
+			for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
+			{
+				PROFILE_SCOPE("Sub Dag %d", SubDagIndex);
+				TGpuArray<uint64> Fragments;
+				const auto SubDagAABB = AABBs[SubDagIndex];
+				if (true)
+				{
+					Fragments = { "Fragments", SUBDAG_MAX_NUM_FRAGMENTS };
+					uint64 Num = 0;
+					const auto SubDagAABBs = GetAABBs(SubDagAABB, SUBDAG_LEVELS - VOXELIZER_LEVELS);
+					for (uint32 Index = 0; Index < SubDagAABBs.size(); Index++)
+					{
+						const uint32 GlobalIndex = SubDagIndex * uint32(SubDagAABBs.size()) + Index;
+						if (IsEmpty[GlobalIndex] && !ENABLE_CHECKS) continue;
+
+						TGpuArray<uint64> VoxelizerFragments;
+						{
+							SCOPE_TIME(GenerateFragmentsTime);
+							VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABBs[Index]);
+						}
+						
+						if (VoxelizerFragments.Num() > 0)
+						{
+							SCOPE_TIME(AddParentToFragmentsTime);
+							
+							check(!IsEmpty[GlobalIndex]);
+							const uint64 Offset = Num;
+							Num += VoxelizerFragments.Num();
+							TGpuArray<uint64> CudaFragments(Fragments.GetData() + Offset, VoxelizerFragments.Num());
+							AddParentToFragments(VoxelizerFragments, CudaFragments, Index, VOXELIZER_LEVELS);
+							CUDA_SYNCHRONIZE_STREAM();
+						}
+						else
+						{
+							EmptySubDags++;
+						}
+					}
+					checkfAlways(Num < Fragments.Num(), "SUBDAG_MAX_NUM_FRAGMENTS is %u, needs to be >= to %" PRIu64, SUBDAG_MAX_NUM_FRAGMENTS, Num);
+					if (Num == 0)
+					{
+						Fragments.Free();
+					}
+					auto Copy = Fragments;
+					Fragments.Reset();
+					Fragments = { Copy.GetData(), Num };
+				}
+				else
+				{
+					checkAlways(VOXELIZER_LEVELS == SUBDAG_LEVELS);
+					auto VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABB);
 					if (VoxelizerFragments.Num() > 0)
 					{
-						check(!IsEmpty[GlobalIndex]);
-						const uint64 Offset = Num;
-						Num += VoxelizerFragments.Num();
-						TGpuArray<uint64> CudaFragments(Fragments.GetData() + Offset, VoxelizerFragments.Num());
-						AddParentToFragments(VoxelizerFragments, CudaFragments, Index, VOXELIZER_LEVELS);
+						Fragments = { "Fragments", VoxelizerFragments.Num() };
+						FMemory::CudaMemcpy(Fragments.GetData(), VoxelizerFragments.GetData(), VoxelizerFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
 						CUDA_SYNCHRONIZE_STREAM();
 					}
-					else
-					{
-						TotalGenerateFragmentsEmptyTime += Utils::Seconds() - StartTime;
-					}
 				}
-				checkfAlways(Num < Fragments.Num(), "SUBDAG_MAX_NUM_FRAGMENTS is %u, needs to be >= to %" PRIu64, SUBDAG_MAX_NUM_FRAGMENTS, Num);
+				TotalFragments += Fragments.Num();
+				const uint32 NumFragments = Cast<uint32>(Fragments.Num());
 
-				if (Num == 0)
 				{
-					Fragments.Free();
+					SCOPE_TIME(CreateSubDagTime);
+					auto CpuDag = CreateSubDAG(std::move(Fragments), SortFragmentsTime);
+					CUDA_SYNCHRONIZE_STREAM();
+					DagsToMerge.push_back(CpuDag);
 				}
 
-				auto Copy = Fragments;
-				Fragments.Reset();
-				Fragments = { Copy.GetData(), Num };
+				LOG("Sub Dag %u/%u %u fragments", SubDagIndex + 1, uint32(AABBs.size()), NumFragments);
+			}
+		}
+		
+		MARK("Merge");
+		LOG("");
+		LOG("############################################################");
+		LOG("Merging");
+		LOG("############################################################");
+		LOG("");
+		FCpuDag MergedDag;
+		{
+			SCOPE_TIME(MergeTime);
+			if (DagsToMerge.size() == 1)
+			{
+				MergedDag = DagsToMerge[0];
 			}
 			else
 			{
-				checkAlways(VOXELIZER_LEVELS == SUBDAG_LEVELS);
-				auto VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABB);
-				if (VoxelizerFragments.Num() > 0)
-				{
-					Fragments = { "Fragments", VoxelizerFragments.Num() };
-					FMemory::CudaMemcpy(Fragments.GetData(), VoxelizerFragments.GetData(), VoxelizerFragments.SizeInBytes(), cudaMemcpyDeviceToDevice);
-					CUDA_SYNCHRONIZE_STREAM();
-				}
+				MergedDag = DAGCompression::MergeDAGs(std::move(DagsToMerge));
+				CUDA_SYNCHRONIZE_STREAM();
 			}
-
-			const double GenerateFragmentsElapsed = Utils::Seconds() - GenerateFragmentsStartTime;
-			TotalGenerateFragmentsTime += GenerateFragmentsElapsed;
-			TotalFragments += Fragments.Num();
-
-			const uint32 NumFragments = Cast<uint32>(Fragments.Num());
-
-			const double CreateDAGStartTime = Utils::Seconds();
-			auto CpuDag = CreateSubDAG(std::move(Fragments));
-			CUDA_SYNCHRONIZE_STREAM();
-			const double CreateDAGElapsed = Utils::Seconds() - CreateDAGStartTime;
-			TotalCreateDAGTime += CreateDAGElapsed;
-
-			LOG("Sub Dag %u/%u %u fragments", SubDagIndex + 1, uint32(AABBs.size()), NumFragments);
-			
-			DagsToMerge.push_back(CpuDag);
 		}
+
+		MARK("CreateFinalDag");
+		{
+			SCOPE_TIME(CreateFinalDagTime);
+			FinalDag = DAGCompression::CreateFinalDAG(std::move(MergedDag));
+			CUDA_SYNCHRONIZE_STREAM();
+		}
+		
+		MARK("Done");
+		cudaProfilerStop();
 	}
-
-	MARK("Merge");
-
+	
 	LOG("");
+	LOG("############################################################");;
+	TotalTime.Print();
+	IsEmptyTime.Print();
+	CreateDagsTime.Print();
+	GenerateFragmentsTime.Print();
+	AddParentToFragmentsTime.Print();
+	CreateSubDagTime.Print();
+	SortFragmentsTime.Print();
+	MergeTime.Print();
+	CreateFinalDagTime.Print();
 	LOG("############################################################");
-	LOG("Merging");
+	LOG("Empty Sub Dags still processed: %" PRIu64, EmptySubDags);
 	LOG("############################################################");
-	LOG("");
-
-	const double MergeDagsStartTime = Utils::Seconds();
-	FCpuDag MergedDag;
-	if (DagsToMerge.size() == 1)
-	{
-		MergedDag = DagsToMerge[0];
-	}
-	else
-	{
-		MergedDag = DAGCompression::MergeDAGs(std::move(DagsToMerge));
-		CUDA_SYNCHRONIZE_STREAM();
-	}
-	const double MergeDagsElapsed = Utils::Seconds() - MergeDagsStartTime;
-
-	MARK("CreateFinalDag");
-
-	const double CreateFinalDAGStartTime = Utils::Seconds();
-	const auto FinalDag = DAGCompression::CreateFinalDAG(std::move(MergedDag));
-	CUDA_SYNCHRONIZE_STREAM();
-	const double CreateFinalDAGElapsed = Utils::Seconds() - CreateFinalDAGStartTime;
-
-	const double TotalElapsed = Utils::Seconds() - GlobalStartTime;
-	MARK("Done");
-
-	cudaProfilerStop();
-
-	LOG("");
-	LOG("############################################################");
-	LOG("Total elapsed: %fs", TotalElapsed);
-	LOG("IsEmpty: %fs", IsEmptyTime);
-	LOG("Total GenerateFragments: %fs", TotalGenerateFragmentsTime);
-	LOG("Total GenerateFragmentsEmpty: %fs", TotalGenerateFragmentsEmptyTime);
-	LOG("Total CreateDAG: %fs", TotalCreateDAGTime);
-	LOG("MergeDags: %fs", MergeDagsElapsed);
-	LOG("CreateFinalDAG: %fs", CreateFinalDAGElapsed);
 	LOG("Total Fragments: %" PRIu64, TotalFragments);
-	LOG("Throughput: %f BV/s", TotalFragments / TotalElapsed / 1.e9);
+	LOG("Throughput: %f BV/s", TotalFragments / TotalTime.Time / 1.e9);
 	LOG("############################################################");
 	LOG("");
 

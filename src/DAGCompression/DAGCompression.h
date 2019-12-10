@@ -28,18 +28,11 @@ struct FCpuLevel
 	TCpuArray<FChildrenIndices> ChildrenIndices;
 	TCpuArray<uint64> Hashes;
 
-	template<typename T>
-	inline void Free(T& Allocator)
+	inline void Free()
 	{
-		ChildMasks.Free(Allocator);
-		ChildrenIndices.Free(Allocator);
-		Hashes.Free(Allocator);
-	}
-	
-	void Free()
-	{
-		FImmediateAllocator Allocator;
-		Free(Allocator); // TODO
+		ChildMasks.Free();
+		ChildrenIndices.Free();
+		Hashes.Free();
 	}
 };
 
@@ -57,9 +50,9 @@ struct FGpuLevel
 		CpuLevel.ChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", ChildrenIndices.Num());
 		CpuLevel.Hashes = TCpuArray<uint64>("Hashes", Hashes.Num());
 
-		ChildMasks.CopyToCPU(CpuLevel.ChildMasks);
-		ChildrenIndices.CopyToCPU(CpuLevel.ChildrenIndices);
-		Hashes.CopyToCPU(CpuLevel.Hashes);
+		ChildMasks.CopyTo(CpuLevel.ChildMasks);
+		ChildrenIndices.CopyTo(CpuLevel.ChildrenIndices);
+		Hashes.CopyTo(CpuLevel.Hashes);
 
 		return CpuLevel;
 	}
@@ -69,23 +62,16 @@ struct FGpuLevel
 		ChildrenIndices = TGpuArray<FChildrenIndices>("ChildrenIndices", CpuLevel.ChildrenIndices.Num());
 		if (LoadHashes) Hashes = TGpuArray<uint64>("Hashes", CpuLevel.Hashes.Num());
 
-		CpuLevel.ChildMasks.CopyToGPU(ChildMasks);
-		CpuLevel.ChildrenIndices.CopyToGPU(ChildrenIndices);
-		if (LoadHashes) CpuLevel.Hashes.CopyToGPU(Hashes);
+		CpuLevel.ChildMasks.CopyTo(ChildMasks);
+		CpuLevel.ChildrenIndices.CopyTo(ChildrenIndices);
+		if (LoadHashes) CpuLevel.Hashes.CopyTo(Hashes);
 	}
 
-	template<typename T>
-	void Free(T& Allocator, bool FreeHashes = true)
-	{
-		ChildMasks.Free(Allocator);
-		ChildrenIndices.Free(Allocator);
-		if (FreeHashes) Hashes.Free(Allocator);
-	}
-	
 	void Free(bool FreeHashes = true)
 	{
-		FImmediateAllocator Allocator;
-		Free(Allocator, FreeHashes); // TODO
+		ChildMasks.Free();
+		ChildrenIndices.Free();
+		if (FreeHashes) Hashes.Free();
 	}
 };
 
@@ -95,22 +81,15 @@ struct FCpuDag
 	TCpuArray<uint64> Leaves;
 	TCpuArray<uint32> Colors;
 
-	template<typename T>
-	inline void Free(T& Allocators)
+	inline void Free()
 	{
-		for(auto& Level : Levels)
+		for (auto& Level : Levels)
 		{
-			Level.Free(Allocators);
+			Level.Free();
 		}
 		Levels.clear();
-		Leaves.Free(Allocators);
-		Colors.Free(Allocators);
-	}
-	
-	void Free()
-	{
-		FImmediateAllocator Allocator;
-		Free(Allocator); // TODO
+		Leaves.Free();
+		Colors.Free();
 	}
 };
 
@@ -130,7 +109,7 @@ namespace DAGCompression
 	void AddParentToFragments(const TGpuArray<uint64>& Src, TGpuArray<uint64>& Dst, uint32 Parent, uint32 ParentLevel);
 
 	// Will free Fragments
-	FCpuDag CreateSubDAG(TGpuArray<uint64> Fragments);
+	FCpuDag CreateSubDAG(TGpuArray<uint64> Fragments, FTimeCounter& SortFragmentsTime);
 	FCpuDag MergeDAGs(std::vector<FCpuDag> CpuDags);
 	FFinalDag CreateFinalDAG(FCpuDag CpuDag);
 

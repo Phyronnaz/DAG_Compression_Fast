@@ -89,26 +89,37 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 inline auto AllocGPU(void*& Ptr, uint64 Size)
 {
 	PROFILE_FUNCTION_TRACY();
+	CUDA_SYNCHRONIZE_STREAM();
 	const auto Result = cnmemMalloc(&Ptr, Size, 0);
+	// const auto Result = cudaMalloc(&Ptr, Size);
+	CUDA_SYNCHRONIZE_STREAM();
 	TracyAlloc(Ptr, Size);
 	return Result;
 }
 inline auto AllocCPU(void*& Ptr, uint64 Size)
 {
 	PROFILE_FUNCTION_TRACY();
-	return cudaMallocHost(&Ptr, Size);
+	CUDA_SYNCHRONIZE_STREAM();
+	const auto Result = cudaMallocHost(&Ptr, Size);
+	CUDA_SYNCHRONIZE_STREAM();
+	TracyAlloc(Ptr, Size);
+	return Result;
 }
-inline void FreeGPU(void* Ptr, cudaStream_t Stream)
+inline void FreeGPU(void* Ptr)
 {
 	PROFILE_FUNCTION_TRACY();
 	TracyFree(Ptr);
 	CUDA_SYNCHRONIZE_STREAM();
 	CUDA_CHECKED_CALL cnmemFree(Ptr, 0);
+	// CUDA_CHECKED_CALL cudaFree(Ptr);
+	CUDA_SYNCHRONIZE_STREAM();
 }
 inline void FreeCPU(void* Ptr)
 {
 	PROFILE_FUNCTION_TRACY();
+	CUDA_SYNCHRONIZE_STREAM();
 	CUDA_CHECKED_CALL cudaFreeHost(Ptr);
+	CUDA_SYNCHRONIZE_STREAM();
 }
 
 void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
@@ -159,7 +170,7 @@ void* FMemory::MallocImpl(const char* Name, uint64 Size, EMemoryType Type)
 			MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 		}
 		checkAlways(Allocations.find(Ptr) == Allocations.end());
-		Allocations[Ptr] = { Name, Size, Type, DEFAULT_STREAM };
+		Allocations[Ptr] = { Name, Size, Type };
 	}
 
 	return Ptr;
@@ -183,7 +194,7 @@ void FMemory::FreeImpl(void* Ptr)
 		ZONE_METADATA("Size: %" PRIu64 "B", Alloc.Size);
 		if (Alloc.Type == EMemoryType::GPU)
 		{
-			FreeGPU(Ptr, Alloc.Stream);
+			FreeGPU(Ptr);
 		}
 		else
 		{
@@ -204,50 +215,6 @@ void FMemory::FreeImpl(void* Ptr)
 			TotalAllocatedCpuMemory -= Alloc.Size;
 			MaxTotalAllocatedCpuMemory = std::max(MaxTotalAllocatedCpuMemory, TotalAllocatedCpuMemory);
 		}
-	}
-}
-
-void FMemory::ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData)
-{
-	PROFILE_FUNCTION_TRACY();
-
-	const auto OldPtr = Ptr;
-	FAlloc OldAlloc;
-	{
-		FScopeLock Lock(MemoryMutex);
-		checkAlways(Ptr);
-		checkAlways(Allocations.find(Ptr) != Allocations.end());
-		OldAlloc = Allocations[Ptr];
-	}
-
-	if (!bCopyData)
-	{
-		// Free ASAP
-		FreeImpl(OldPtr);
-	}
-	Ptr = MallocImpl(OldAlloc.Name, NewSize, OldAlloc.Type);
-	if (Ptr && bCopyData)
-	{
-		if (OldAlloc.Type == EMemoryType::GPU)
-		{
-			cudaError_t Error = cudaMemcpyAsync(Ptr, OldPtr, std::min(NewSize, OldAlloc.Size), cudaMemcpyDeviceToDevice);
-			if (Error == cudaSuccess) Error = cudaStreamSynchronize(DEFAULT_STREAM);
-			if (Error != cudaSuccess)
-			{
-				LOG("\n\n\n");
-				LOG("Fatal error when copying %fMB of GPU memory!", Utils::ToMB(OldAlloc.Size));
-				std::cout << GetStatsStringImpl() << std::endl;
-				CUDA_CHECKED_CALL Error;
-			}
-		}
-		else
-		{
-			std::memcpy(Ptr, OldPtr, std::min(NewSize, OldAlloc.Size));
-		}
-	}
-	if (bCopyData)
-	{
-		FreeImpl(OldPtr);
 	}
 }
 
@@ -345,4 +312,18 @@ std::string FMemory::GetStatsStringImpl() const
 		StringStream << "\t" << MemoryTypeToString(Alloc.Type) << "; 0x" << std::hex << Ptr << "; " << std::dec << std::setw(10) << Alloc.Size << " B; " << Alloc.Name << std::endl;
 	}
 	return StringStream.str();
+}
+
+void FTempStorage::Allocate()
+{
+	CUDA_CHECK_LAST_ERROR();
+	check(Bytes > 0);
+	AllocGPU(Ptr, Bytes);
+}
+void FTempStorage::Free()
+{
+	CUDA_CHECK_LAST_ERROR();
+	FreeGPU(Ptr);
+	Ptr = nullptr;
+	Bytes = 0;
 }

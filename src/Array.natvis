@@ -11,16 +11,4 @@
       </ArrayItems>
     </Expand>
   </Type>
-  <Type Name="TDynamicArray&lt;*&gt;">
-    <DisplayString>{{ size={ArraySize} allocated={AllocatedSize} }</DisplayString>
-    <Expand>
-      <Item Name="[size]" ExcludeView="simple">ArraySize</Item>
-      <Item Name="[allocated]" ExcludeView="simple">AllocatedSize</Item>
-      <Item Name="[data]" ExcludeView="simple">(void*)ArrayData</Item>
-      <ArrayItems>
-        <Size>ArraySize</Size>
-        <ValuePointer>ArrayData</ValuePointer>
-      </ArrayItems>
-    </Expand>
-  </Type>
 </AutoVisualizer>

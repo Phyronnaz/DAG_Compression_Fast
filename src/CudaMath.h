@@ -51,6 +51,7 @@ HOST_DEVICE constexpr T round(const T& v) { return make_vector3<T>(std::round(v.
 VECTOR_OP(float3)
 VECTOR_OP(double3)
 VECTOR_OP(uint3)
+VECTOR_OP(int3)
 
 VECTOR_FLOAT_OP(float3)
 VECTOR_FLOAT_OP(double3)
@@ -68,6 +69,8 @@ HOST_DEVICE constexpr bool operator == (const uint3 & a, const uint3 & b) { retu
 HOST_DEVICE constexpr bool operator != (const uint3 & a, const uint3 & b) { return !(a == b); }
 HOST_DEVICE constexpr uint3 make_uint3(const uint32& v) { return make_vector3<uint3>(v, v, v); }
 HOST_DEVICE constexpr uint3 make_uint3(const uint4& v) { return make_vector3<uint3>(v.x, v.y, v.z); }
+HOST_DEVICE constexpr int3 make_int3(const int32& v) { return make_vector3<int3>(v, v, v); }
+HOST_DEVICE constexpr int3 make_int3(const uint3& v) { return make_vector3<int3>(int32(v.x), int32(v.y), int32(v.z)); }
 
 HOST_DEVICE constexpr uint3 truncate(const float3& f) { return make_vector3<uint3>(uint32(f.x), uint32(f.y), uint32(f.z)); }
 

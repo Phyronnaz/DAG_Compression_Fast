@@ -16,7 +16,7 @@ uint32_t mortonEncode32(uint32_t x, uint32_t y, uint32_t z)
 	return splitBy3_32(x) << 2 | splitBy3_32(y) << 1 | splitBy3_32(z);
 };
 
-uint64_t splitBy3_64(uint32_t a)
+uint64_t splitBy3_64(uint64_t a)
 {
 	uint64_t x = a & 0x1fffff; // we only look at the first 21 bits
 	x = (x | x << 32) & 0x1f00000000fffful; // shift left 32 bits, OR with self, and 00011111000000000000000000000000000000001111111111111111

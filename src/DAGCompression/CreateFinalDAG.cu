@@ -16,7 +16,7 @@ uint32 ComputeChildPositions(const FGpuLevel& Level, TGpuArray<uint32>& ChildPos
 		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(Storage.Ptr, Storage.Bytes, NodeSizes, ChildPositions.GetData(), Num, DEFAULT_STREAM);
 		Storage.Allocate();
 		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(Storage.Ptr, Storage.Bytes, NodeSizes, ChildPositions.GetData(), Num, DEFAULT_STREAM);
-		Storage.SyncAndFree();
+		Storage.Free();
 	}
 	
 	return GetElement(ChildPositions, Num - 1) + Utils::TotalSize(GetElement(Level.ChildMasks, Num - 1));
@@ -170,15 +170,15 @@ void SetLeavesCountsCpu(FFinalDag& Dag)
 	SetLeavesCountsKernel <<< uint32(Indices.size()), 1 >>> (GpuIndices, GpuCounts, GpuDag);
 	GpuIndices.Free();
 
-	GpuCounts.CopyToCPU(CpuCounts);
+	GpuCounts.CopyTo(CpuCounts);
 	GpuCounts.Free();
 
-	GpuDag.CopyToCPU(CpuDag);
+	GpuDag.CopyTo(CpuDag);
 
 	SetLeavesCountsCpuImpl<false>(CpuDag, CpuCounts, EnclosedLeaves, Indices, 0, 0);
 	CpuCounts.Free();
 	
-	CpuDag.CopyToGPU(Dag.Dag);
+	CpuDag.CopyTo(Dag.Dag);
 	CpuDag.Free();
 
 	if (!EnclosedLeaves.empty())
@@ -272,7 +272,7 @@ FFinalDag DAGCompression::CreateFinalDAG(FCpuDag CpuDag)
 	{
 		PROFILE_SCOPE("Copy Colors");
 		FinalDag.Colors = TGpuArray<uint32>("Colors", CpuDag.Colors.Num());
-		CpuDag.Colors.CopyToGPU(FinalDag.Colors);
+		CpuDag.Colors.CopyTo(FinalDag.Colors);
 		CpuDag.Colors.Free();
 	}
 #endif

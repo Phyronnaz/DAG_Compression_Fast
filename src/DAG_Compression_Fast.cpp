@@ -36,7 +36,7 @@ int main()
 		}
 	};
 	FScopedCNMEM CNMEM;
-
+	
 	//DAGCompression::CheckGPU();
 
 	FAABB AABB;

@@ -19,7 +19,6 @@ public:
 		const char* Name = nullptr;
 		uint64 Size = uint64(-1);
 		EMemoryType Type = EMemoryType::CPU;
-		cudaStream_t Stream{};
 	};
 
 	template<typename T>
@@ -33,14 +32,6 @@ public:
 	{
 		CUDA_CHECK_LAST_ERROR();
 		Singleton.FreeImpl(reinterpret_cast<void*>(Ptr));
-	}
-	template<typename T>
-	static void Realloc(T*& Ptr, uint64 NewSize, bool bCopyData = true)
-	{
-		CUDA_CHECK_LAST_ERROR();
-		void* Copy = reinterpret_cast<void*>(Ptr);
-		Singleton.ReallocImpl(Copy, NewSize, bCopyData);
-		Ptr = reinterpret_cast<T*>(Copy);
 	}
 	template<typename T>
 	static void RegisterCustomAlloc(T* Ptr, const char* Name, uint64 Size, EMemoryType Type)
@@ -132,7 +123,6 @@ private:
 	void CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemcpyKind MemcpyKind);
     void* MallocImpl(const char* Name, uint64 Size, EMemoryType Type);
     void FreeImpl(void* Ptr);
-	void ReallocImpl(void*& Ptr, uint64 NewSize, bool bCopyData);
 	void RegisterCustomAllocImpl(void* Ptr, const char* Name, uint64 Size, EMemoryType Type);
 	void UnregisterCustomAllocImpl(void* Ptr);
 	FAlloc GetAllocInfoImpl(void* Ptr) const;
@@ -148,65 +138,49 @@ private:
     static FMemory Singleton;
 };
 
+struct FTempStorage
+{
+	void* Ptr = nullptr;
+	size_t Bytes = 0;
+
+	FTempStorage()
+	{
+		CUDA_CHECK_LAST_ERROR();
+	}
+	~FTempStorage()
+	{
+		check(!Ptr);
+		check(Bytes == 0);
+	}
+	void Allocate();
+	void Free();
+};
+
 template<typename T>
 class TSingleGPUElement
 {
 public:
 	TSingleGPUElement()
 	{
-		CUDA_CHECKED_CALL cnmemMalloc(reinterpret_cast<void**>(&Ptr), sizeof(T), 0);
+		Storage.Bytes = sizeof(T);
+		Storage.Allocate();
 	}
 	~TSingleGPUElement()
 	{
-		CUDA_SYNCHRONIZE_STREAM();
-		CUDA_CHECKED_CALL cnmemFree(Ptr, 0);
+		Storage.Free();
 	}
 
 	inline T* GetPtr()
 	{
-		return Ptr;
+		return reinterpret_cast<T*>(Storage.Ptr);
 	}
 	inline T GetValue() const
 	{
-		return FMemory::ReadGPUValue(Ptr);
+		return FMemory::ReadGPUValue(reinterpret_cast<T*>(Storage.Ptr));
 	}
 
 private:
-	T* Ptr = nullptr;
-};
-
-struct FScopeAllocator
-{
-	FScopeAllocator() = default;
-	~FScopeAllocator()
-	{
-		PROFILE_FUNCTION_TRACY();
-		CUDA_CHECK_LAST_ERROR();
-		
-		for (void* Ptr : PtrsToFree)
-		{
-			FMemory::Free(Ptr);
-		}
-	}
-
-	template<typename T>
-	void Free(T* Ptr)
-	{
-		CUDA_CHECK_LAST_ERROR();
-		PtrsToFree.push_back(reinterpret_cast<void*>(Ptr));
-	}
-
-private:
-	std::vector<void*> PtrsToFree;
-};
-
-struct FImmediateAllocator
-{
-	template<typename T>
-	static void Free(T* Ptr)
-	{
-		FMemory::Free(Ptr);
-	}
+	FTempStorage Storage;
 };
 
 // TODO async copy

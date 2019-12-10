@@ -183,9 +183,85 @@ namespace Utils
 		return (Value & (Value - 1)) == 0;
 	}
 
+	HOST_DEVICE uint64 MortonEncode64(uint32 X, uint32 Y, uint32 Z)
+	{
+		const auto SplitBy3 = [] GPU_LAMBDA (uint32 A)
+		{
+			uint64 X = A & 0x1fffff; // we only look at the first 21 bits
+			X = (X | X << 32) & 0x1f00000000fffful; // shift left 32 bits, OR with self, and 00011111000000000000000000000000000000001111111111111111
+			X = (X | X << 16) & 0x1f0000ff0000fful; // shift left 32 bits, OR with self, and 00011111000000000000000011111111000000000000000011111111
+			X = (X | X << 8) & 0x100f00f00f00f00ful; // shift left 32 bits, OR with self, and 0001000000001111000000001111000000001111000000001111000000000000
+			X = (X | X << 4) & 0x10c30c30c30c30c3ul; // shift left 32 bits, OR with self, and 0001000011000011000011000011000011000011000011000011000100000000
+			X = (X | X << 2) & 0x1249249249249249ul;
+			return X;
+		};
+		return SplitBy3(X) << 2 | SplitBy3(Y) << 1 | SplitBy3(Z);
+	}
+	template<typename T>
+	HOST_DEVICE T MortonDecode64(uint64 A)
+	{
+		const auto Compact3 = [] GPU_LAMBDA (uint64 X)
+		{
+			X = X & 0x1249249249249249ul;
+			X = (X | (X >> 2)) & 0x10c30c30c30c30c3ul;
+			X = (X | (X >> 4)) & 0x100f00f00f00f00ful;
+			X = (X | (X >> 8)) & 0x001f0000ff0000fful;
+			X = (X | (X >> 16)) & 0x001f00000000fffful;
+			X = (X | (X >> 32)) & 0x00000000001ffffful;
+			return uint32(X);
+		};
+		return T{ Compact3(A >> 2), Compact3(A >> 1), Compact3(A) };
+	}
+
     HOST double Seconds()
     {
         static auto Start = std::chrono::high_resolution_clock::now();
         return double(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - Start).count()) / 1.e9;
     }
 }
+
+struct FTimeCounter
+{
+	const char* const Name;
+	double Time = 0;
+	int32 Indent = 0;
+
+	explicit FTimeCounter(const char* Name)
+		: Name(Name)
+	{
+	}
+	inline void Print() const
+	{
+		for (int32 Index = 0; Index < Indent; Index++)
+		{
+			printf("\t");
+		}
+		printf("%s: %fs\n", Name, Time);
+	}
+};
+
+struct FScopedTime
+{
+	explicit FScopedTime(FTimeCounter& OutTime)
+		: OutTime(OutTime)
+		, StartTime(Utils::Seconds())
+		, ScopeDepth(StaticScopeDepth++)
+	{
+		checkAlways(OutTime.Indent == 0 || OutTime.Indent == ScopeDepth);
+		OutTime.Indent = ScopeDepth;
+	}
+	~FScopedTime()
+	{
+		OutTime.Time += Utils::Seconds() - StartTime;
+		checkAlways(--StaticScopeDepth == ScopeDepth);
+	}
+
+private:
+	FTimeCounter& OutTime;
+	const double StartTime;
+	const int32 ScopeDepth;
+	static int32 StaticScopeDepth;
+};
+
+#define DECLARE_TIME(Name) FTimeCounter Name{ #Name }
+#define SCOPE_TIME(Time) FScopedTime __ScopedTime ## __LINE__ (Time)
