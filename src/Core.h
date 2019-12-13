@@ -9,21 +9,20 @@
 #define TOP_LEVEL MAX(LEVELS - 8, 0)
 
 #define LEVELS 15
-#define SUBDAG_LEVELS 12
-#define SUBDAG_MAX_NUM_FRAGMENTS (150 * 1024 * 1024)
+#define SUBDAG_LEVELS 13
+#define SUBDAG_MAX_NUM_FRAGMENTS (500 * 1024 * 1024)
 
 #define VOXELIZER_LEVELS 10
 #define VOXELIZER_MAX_NUM_FRAGMENTS (10 * 1024 * 1024) // Needs to be as small as possible: larger buffer size leads to 10x slower rasterization
 
 
-#define GPU_MEMORY_ALLOCATED_IN_GB 6.0
+#define GPU_MEMORY_ALLOCATED_IN_GB 6.5
 
 #define MERGE_MIN_NODES_FOR_GPU 50000 // Under this number of nodes in a level, the CPU will be used
 
 #define NUM_MERGE_COLORS_THREADS 4
 
 
-#define NUM_MERGE_THREADS 0
 #define PRINT_DEBUG_INFO 0
 #define DEBUG_THRUST 0
 
@@ -31,7 +30,6 @@
 #define ENABLE_FLATTEN 0
 
 static_assert(SUBDAG_LEVELS <= LEVELS, "");
-static_assert(!DEBUG_GPU_ARRAYS || NUM_MERGE_THREADS == 0 || LEVELS == SUBDAG_LEVELS, "");
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -343,7 +341,9 @@ using FUniqueLock = std::unique_lock<LockableBase(std::mutex)>;
 #define DEFAULT_STREAM GetDefaultStream()
 
 #define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
-#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize();
+#define CUDA_SYNCHRONIZE_STREAM() // CUDA_CHECKED_CALL StreamSynchronize();
+// Memory free & memcpy to host must always be synchronized
+#define CUDA_FORCE_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize();
 #define CUDA_CHECK_LAST_ERROR() CUDA_CHECKED_CALL cudaGetLastError();
 
 inline cudaStream_t GetDefaultStream()

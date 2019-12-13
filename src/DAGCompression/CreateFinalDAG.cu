@@ -12,6 +12,9 @@ uint32 ComputeChildPositions(const FGpuLevel& Level, TGpuArray<uint32>& ChildPos
 	const auto NodeSizes = thrust::make_transform_iterator(Level.ChildMasks.GetData(),  [] GPU_LAMBDA (uint8 ChildMask) { return Utils::TotalSize(ChildMask); });
 
 	{
+		PROFILE_SCOPE_TRACY("ExclusiveSum");
+		SCOPED_BANDWIDTH_TRACY(Num);
+		
 		FTempStorage Storage;
 		CUDA_CHECKED_CALL cub::DeviceScan::ExclusiveSum(Storage.Ptr, Storage.Bytes, NodeSizes, ChildPositions.GetData(), Num, DEFAULT_STREAM);
 		Storage.Allocate();

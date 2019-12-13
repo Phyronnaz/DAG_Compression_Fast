@@ -19,11 +19,13 @@ private:
 
 	GLuint VoxelizeShader = 0;
 	GLuint FragCtrBuffer = 0;
-	GLuint PositionSSBO = 0;
 	GLuint DummyFBO = 0;
-	
-	cudaGraphicsResource* CudaPositionResource = nullptr;
-	uint64* Positions = nullptr;
+
+	static constexpr uint32 NumBuffers = 2;
+	GLuint PositionSSBOs[NumBuffers];
+	uint64* Positions[NumBuffers];
+	cudaGraphicsResource* PositionsCudaResource[NumBuffers];
+	int32 ActiveBuffer = 0;
 
 public:
 	explicit FVoxelizer(uint32 TexDim, uint32 SubGridSize, const FScene& Scene);
@@ -31,6 +33,11 @@ public:
 
 	// Array is only valid while the voxelizer object hasn't been destroyed!
 	TGpuArray<uint64> GenerateFragments(const FAABB& AABB) const;
+
+	inline void SwapBuffers()
+	{
+		ActiveBuffer = (ActiveBuffer + 1) % NumBuffers;
+	}
 
 private:
 	void Draw() const;

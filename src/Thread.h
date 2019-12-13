@@ -189,7 +189,7 @@ private:
 				{
 					PROFILE_SCOPE("Process %u", Query);
 					NewResult = ProcessFunction(Query, NewInput);
-					CUDA_SYNCHRONIZE_STREAM();
+					CUDA_FORCE_SYNCHRONIZE_STREAM();
 				}
 
 				FScopeLock Lock(ProcessedQueriesMutex);

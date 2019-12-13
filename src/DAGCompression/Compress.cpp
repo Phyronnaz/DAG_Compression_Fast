@@ -33,6 +33,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	DECLARE_TIME(AddParentToFragmentsTime);
 	DECLARE_TIME(CreateSubDagTime);
 	DECLARE_TIME(SortFragmentsTime);
+	DECLARE_TIME(WaitingForSubDagThreadTime);
 	DECLARE_TIME(MergeTime);
 	DECLARE_TIME(CreateFinalDagTime);
 
@@ -84,11 +85,13 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 				}
 			}
 		}
-		std::vector<FCpuDag> DagsToMerge;
+		std::vector<std::shared_ptr<FCpuDag>> DagsToMerge;
 		{
 			PROFILE_SCOPE("Create Dags");
 			SCOPE_TIME(CreateDagsTime);
 
+			FThreadPool AddParentToFragmentsPool(1, "AddParentToFragments");
+			FThreadPool CreateCpuDagPool(4, "CreateCpuDag");
 			FVoxelizer Voxelizer(VOXELIZER_MAX_NUM_FRAGMENTS, 1u << VOXELIZER_LEVELS, Scene);
 			for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
 			{
@@ -110,23 +113,33 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 							SCOPE_TIME(GenerateFragmentsTime);
 							VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABBs[Index]);
 						}
+
+						{
+							SCOPE_TIME(AddParentToFragmentsTime);
+							AddParentToFragmentsPool.WaitForCompletion();
+							Voxelizer.SwapBuffers();
+						}
 						
 						if (VoxelizerFragments.Num() > 0)
 						{
-							SCOPE_TIME(AddParentToFragmentsTime);
-							
 							check(!IsEmpty[GlobalIndex]);
 							const uint64 Offset = Num;
 							Num += VoxelizerFragments.Num();
-							TGpuArray<uint64> CudaFragments(Fragments.GetData() + Offset, VoxelizerFragments.Num());
-							AddParentToFragments(VoxelizerFragments, CudaFragments, Index, VOXELIZER_LEVELS);
-							CUDA_SYNCHRONIZE_STREAM();
+
+							AddParentToFragmentsPool.Enqueue([&Fragments, Offset, VoxelizerFragments, Index]()
+							{
+								NAME_THREAD("AddParentToFragments Thread");
+								TGpuArray<uint64> CudaFragments(Fragments.GetData() + Offset, VoxelizerFragments.Num());
+								AddParentToFragments(VoxelizerFragments, CudaFragments, Index, VOXELIZER_LEVELS);
+								CUDA_SYNCHRONIZE_STREAM();
+							});
 						}
 						else
 						{
 							EmptySubDags++;
 						}
 					}
+					AddParentToFragmentsPool.WaitForCompletion();
 					checkfAlways(Num < Fragments.Num(), "SUBDAG_MAX_NUM_FRAGMENTS is %u, needs to be >= to %" PRIu64, SUBDAG_MAX_NUM_FRAGMENTS, Num);
 					if (Num == 0)
 					{
@@ -152,13 +165,20 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 
 				{
 					SCOPE_TIME(CreateSubDagTime);
-					auto CpuDag = CreateSubDAG(std::move(Fragments), SortFragmentsTime);
+					auto CpuDag = CreateSubDAG(std::move(Fragments), SortFragmentsTime, CreateCpuDagPool);
 					CUDA_SYNCHRONIZE_STREAM();
 					DagsToMerge.push_back(CpuDag);
 				}
 
 				LOG("Sub Dag %u/%u %u fragments", SubDagIndex + 1, uint32(AABBs.size()), NumFragments);
 			}
+			AddParentToFragmentsPool.Destroy();
+			{
+				SCOPE_TIME(WaitingForSubDagThreadTime);
+				CreateCpuDagPool.WaitForCompletion();
+			}
+			CreateCpuDagPool.Destroy();
+			IsEmpty.Free();
 		}
 		
 		MARK("Merge");
@@ -172,11 +192,18 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 			SCOPE_TIME(MergeTime);
 			if (DagsToMerge.size() == 1)
 			{
-				MergedDag = DagsToMerge[0];
+				MergedDag = *DagsToMerge[0];
 			}
 			else
 			{
-				MergedDag = DAGCompression::MergeDAGs(std::move(DagsToMerge));
+				std::vector<FCpuDag> Dags;
+				Dags.reserve(DagsToMerge.size());
+				for (auto& Dag : DagsToMerge)
+				{
+					Dags.push_back(*Dag);
+				}
+				DagsToMerge.clear();
+				MergedDag = DAGCompression::MergeDAGs(std::move(Dags));
 				CUDA_SYNCHRONIZE_STREAM();
 			}
 		}
@@ -201,6 +228,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	AddParentToFragmentsTime.Print();
 	CreateSubDagTime.Print();
 	SortFragmentsTime.Print();
+	WaitingForSubDagThreadTime.Print();
 	MergeTime.Print();
 	CreateFinalDagTime.Print();
 	LOG("############################################################");
@@ -239,6 +267,7 @@ inline auto GetResultLambda_Prefetch(T1& Thread, T2 MaxSize)
 	};
 }
 
+#if 0
 FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAABB& SceneAABB)
 {
 	cudaProfilerStart();
@@ -512,3 +541,4 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 	MakeContextCurrent(MainWindow);
 	return FinalDag;
 }
+#endif

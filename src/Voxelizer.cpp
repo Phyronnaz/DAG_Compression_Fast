@@ -229,12 +229,6 @@ FVoxelizer::FVoxelizer(uint32 TexDim, uint32 SubGridSize, const FScene& Scene)
 	glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(GLuint), &Zero);
 	glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 
-	// Data buffer (pos).
-	glGenBuffers(1, &PositionSSBO);
-	glBindBuffer(GL_SHADER_STORAGE_BUFFER, PositionSSBO);
-	glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64), nullptr, GL_DYNAMIC_DRAW);
-	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
 	// Dummy framebuffer.
 	glGenFramebuffers(1, &DummyFBO);
 	glNamedFramebufferParameteri(DummyFBO, GL_FRAMEBUFFER_DEFAULT_WIDTH, SubGridSize);
@@ -242,12 +236,21 @@ FVoxelizer::FVoxelizer(uint32 TexDim, uint32 SubGridSize, const FScene& Scene)
 	glBindFramebuffer(GL_FRAMEBUFFER, DummyFBO);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-	std::size_t NumBytes = 0;
-	CUDA_CHECKED_CALL cudaGraphicsGLRegisterBuffer(&CudaPositionResource, PositionSSBO, cudaGraphicsMapFlagsNone);
-	CUDA_CHECKED_CALL cudaGraphicsMapResources(1, &CudaPositionResource);
-	CUDA_CHECKED_CALL cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&Positions), &NumBytes, CudaPositionResource);
+	for (uint32 Index = 0; Index < NumBuffers; Index++)
+	{
+		// Data buffer (pos).
+		glGenBuffers(1, &PositionSSBOs[Index]);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, PositionSSBOs[Index]);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, TexDim * sizeof(uint64), nullptr, GL_DYNAMIC_DRAW);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-	FMemory::RegisterCustomAlloc(Positions, "OpenGL Fragments", TexDim * sizeof(uint64), EMemoryType::GPU);
+		std::size_t NumBytes = 0;
+		CUDA_CHECKED_CALL cudaGraphicsGLRegisterBuffer(&PositionsCudaResource[Index], PositionSSBOs[Index], cudaGraphicsMapFlagsNone);
+		CUDA_CHECKED_CALL cudaGraphicsMapResources(1, &PositionsCudaResource[Index]);
+		CUDA_CHECKED_CALL cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&Positions[Index]), &NumBytes, PositionsCudaResource[Index]);
+		FMemory::RegisterCustomAlloc(Positions[Index], "OpenGL Fragments", TexDim * sizeof(uint64), EMemoryType::GPU);
+	}
+
 }
 
 FVoxelizer::~FVoxelizer()
@@ -255,12 +258,14 @@ FVoxelizer::~FVoxelizer()
 	PROFILE_FUNCTION();
 	
 	glDeleteBuffers(1, &FragCtrBuffer);
-	glDeleteBuffers(1, &PositionSSBO);
 	glDeleteFramebuffers(1, &DummyFBO);
 
-	CUDA_CHECKED_CALL cudaGraphicsUnmapResources(1, &CudaPositionResource);
-
-	FMemory::UnregisterCustomAlloc(Positions);
+	for (uint32 Index = 0; Index < NumBuffers; Index++)
+	{
+		glDeleteBuffers(1, &PositionSSBOs[Index]);
+		CUDA_CHECKED_CALL cudaGraphicsUnmapResources(1, &PositionsCudaResource[Index]);
+		FMemory::UnregisterCustomAlloc(Positions[Index]);
+	}
 }
 
 TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
@@ -291,7 +296,7 @@ TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 		glUniform3fv(Location, 1, value_ptr(ToVec3(AABB.GetHalfSize())));
 
 		glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, FragCtrBuffer);
-		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, PositionSSBO);
+		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, PositionSSBOs[ActiveBuffer]);
 
 		glBindFramebuffer(GL_FRAMEBUFFER, DummyFBO);
 		{
@@ -318,7 +323,7 @@ TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 	}
 	glUseProgram(0);
 	checkfAlways(FragCount <= TexDim, "TexDim too low: is %u, needs to be >= %u", TexDim, FragCount);
-	return { Positions, FragCount };
+	return { Positions[ActiveBuffer], FragCount };
 }
 
 void FVoxelizer::Draw() const

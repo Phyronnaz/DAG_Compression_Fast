@@ -50,7 +50,7 @@ void DAGCompression::CheckGPU()
 		SortedHashes.Free();
 		SortedHashesToHashes.Free();
 	}
-	
+#if 0
 	TGpuArray<uint8> A = { "Test", MemorySize };
 	for (uint8 Byte = 0; Byte < 256; Byte += 0xFF)
 	{
@@ -92,4 +92,5 @@ void DAGCompression::CheckGPU()
 			CUDA_CHECKED_CALL cudaDeviceSynchronize();
 		}
 	}
+#endif
 }

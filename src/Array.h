@@ -239,6 +239,7 @@ struct TFixedArray
 		if (MemoryType == EMemoryType::GPU)
 		{
 			CUDA_CHECKED_CALL cudaMemset(GetData(), Value, SizeInBytes());
+			CUDA_SYNCHRONIZE_STREAM();
 		}
 		else
 		{

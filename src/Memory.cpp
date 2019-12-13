@@ -52,7 +52,7 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 			const uint64 Offset = BlockIndex * BlockSize;
 			checkInfEqual(Offset + BlockSize, Size);
 			CUDA_CHECKED_CALL cudaMemcpyAsync(Dst + Offset, Src + Offset, BlockSize, MemcpyKind, DEFAULT_STREAM);
-			CUDA_SYNCHRONIZE_STREAM();
+			CUDA_FORCE_SYNCHRONIZE_STREAM();
 		}
 		const uint64 DataLeft = Size - NumBlocks * BlockSize;
 		if (DataLeft > 0)
@@ -60,7 +60,7 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 			const uint64 Offset = NumBlocks * BlockSize;
 			checkEqual(Offset + DataLeft, Size);
 			CUDA_CHECKED_CALL cudaMemcpyAsync(Dst + Offset, Src + Offset, DataLeft, MemcpyKind, DEFAULT_STREAM);
-			CUDA_SYNCHRONIZE_STREAM();
+			CUDA_FORCE_SYNCHRONIZE_STREAM();
 		}
 
 		const double End = Utils::Seconds();
@@ -96,29 +96,40 @@ inline auto AllocGPU(void*& Ptr, uint64 Size)
 	TracyAlloc(Ptr, Size);
 	return Result;
 }
-inline auto AllocCPU(void*& Ptr, uint64 Size)
-{
-	PROFILE_FUNCTION_TRACY();
-	CUDA_SYNCHRONIZE_STREAM();
-	const auto Result = cudaMallocHost(&Ptr, Size);
-	CUDA_SYNCHRONIZE_STREAM();
-	TracyAlloc(Ptr, Size);
-	return Result;
-}
 inline void FreeGPU(void* Ptr)
 {
 	PROFILE_FUNCTION_TRACY();
 	TracyFree(Ptr);
-	CUDA_SYNCHRONIZE_STREAM();
+	CUDA_FORCE_SYNCHRONIZE_STREAM();
 	CUDA_CHECKED_CALL cnmemFree(Ptr, 0);
 	// CUDA_CHECKED_CALL cudaFree(Ptr);
 	CUDA_SYNCHRONIZE_STREAM();
 }
-inline void FreeCPU(void* Ptr)
+
+inline auto AllocCPU(void*& Ptr, uint64 Size)
 {
 	PROFILE_FUNCTION_TRACY();
 	CUDA_SYNCHRONIZE_STREAM();
-	CUDA_CHECKED_CALL cudaFreeHost(Ptr);
+#if 0
+	const auto Result = cudaMallocHost(&Ptr, Size);
+#else
+	Ptr = std::malloc(Size);
+	cudaError_t Result = cudaSuccess;
+#endif
+	CUDA_SYNCHRONIZE_STREAM();
+	TracyAlloc(Ptr, Size);
+	return Result;
+}
+inline void FreeCPU(void* Ptr)
+{
+	PROFILE_FUNCTION_TRACY();
+	TracyFree(Ptr);
+	CUDA_SYNCHRONIZE_STREAM();
+#if 0
+	cudaFreeHost(Ptr);
+#else
+	std::free(Ptr);
+#endif
 	CUDA_SYNCHRONIZE_STREAM();
 }
 

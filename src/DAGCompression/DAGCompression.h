@@ -103,13 +103,13 @@ struct FFinalDag
 namespace DAGCompression
 {
 	FFinalDag Compress_SingleThreaded(const FScene& Scene, const FAABB& SceneAABB);
-	FFinalDag Compress_MultiThreaded(const FScene& Scene, const FAABB& SceneAABB);
+	//FFinalDag Compress_MultiThreaded(const FScene& Scene, const FAABB& SceneAABB);
 
 	std::vector<FAABB> GetAABBs(const FAABB& AABB, int32 NumberOfSplits);
 	void AddParentToFragments(const TGpuArray<uint64>& Src, TGpuArray<uint64>& Dst, uint32 Parent, uint32 ParentLevel);
 
 	// Will free Fragments
-	FCpuDag CreateSubDAG(TGpuArray<uint64> Fragments, FTimeCounter& SortFragmentsTime);
+	std::shared_ptr<FCpuDag> CreateSubDAG(TGpuArray<uint64> Fragments, FTimeCounter& SortFragmentsTime, FThreadPool& Pool);
 	FCpuDag MergeDAGs(std::vector<FCpuDag> CpuDags);
 	FFinalDag CreateFinalDAG(FCpuDag CpuDag);
 
@@ -117,12 +117,18 @@ namespace DAGCompression
 	TGpuArray<uint64> SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments);
 	TGpuArray<uint32> ExtractColorsAndFixFragments(TGpuArray<uint64>& Fragments);
 	TGpuArray<uint64> ExtractLeavesAndShiftReduceFragments(TGpuArray<uint64>& Fragments);
+
 	void SortLeaves(TGpuArray<uint64>& Leaves, TGpuArray<uint32>& OutHashesToSortedUniqueHashes);
 	void SortLevel(FGpuLevel& Level, TGpuArray<uint32>& OutHashesToSortedUniqueHashes);
+	void SortLevel(FCpuLevel& Level, TCpuArray<uint32>& OutHashesToSortedUniqueHashes);
+	
 	FGpuLevel ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>& Fragments, const TGpuArray<uint32>& FragmentIndicesToChildrenIndices);
-	void ComputeHashes(FGpuLevel& Level, const TGpuArray<uint64>& LowerLevelHashes);
+	FCpuLevel ExtractLevelAndShiftReduceFragments(TCpuArray<uint64>& Fragments, const TCpuArray<uint32>& FragmentIndicesToChildrenIndices);
 
-	FCpuDag MergeDAGs(FCpuDag A, FCpuDag B);
+	void ComputeHashes(FGpuLevel& Level, const TGpuArray<uint64>& LowerLevelHashes);
+	void ComputeHashes(FCpuLevel& Level, const TCpuArray<uint64>& LowerLevelHashes);
+
+	std::shared_ptr<FCpuDag> MergeDAGs(FCpuDag A, FCpuDag B, FThreadPool& Pool);
 	std::thread MergeColors(std::vector<TCpuArray<uint32>> Colors, TCpuArray<uint32>& MergedColors);
 	
 	template<typename T>

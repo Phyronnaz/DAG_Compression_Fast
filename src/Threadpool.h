@@ -84,6 +84,7 @@ public:
 	void WaitForCompletion()
 	{
 		PROFILE_FUNCTION();
+		ZONE_METADATA("%s", Name);
 		
 		if (Threads.empty())
 		{
@@ -104,6 +105,7 @@ public:
 	{
 		PROFILE_FUNCTION_TRACY();
 
+		CUDA_FORCE_SYNCHRONIZE_STREAM();
 		Tasks.Enqueue(std::move(Task));
 		OnEnqueue.notify_all();
 	}
@@ -133,7 +135,7 @@ private:
 			if (Tasks.Dequeue(Task))
 			{
 				Task();
-				CUDA_SYNCHRONIZE_STREAM();
+				CUDA_FORCE_SYNCHRONIZE_STREAM();
 			}
 			else
 			{

@@ -34,6 +34,7 @@ struct FScopeBandwidthReporter
 	~FScopeBandwidthReporter()
 	{
 		CUDA_SYNCHRONIZE_STREAM();
+		CUDA_CHECK_LAST_ERROR();
 		char String[1024];
 		const int32 Size = sprintf(String, "%" PRIu64 " elements | %f G/s", Num, Num / (Utils::Seconds() - StartTime) / 1000000000.);
 		checkInfEqual(Size, 1024);
@@ -77,6 +78,7 @@ inline void Foreach(
 	F Lambda)
 {
 	CUDA_CHECK_LAST_ERROR();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	thrust::for_each(
 		GetExecutionPolicy<EMemoryType::GPU>(),
@@ -331,6 +333,8 @@ namespace cub
 				bool debug_synchronous = false)
 		{
 			CUDA_CHECK_LAST_ERROR();
+			PROFILE_FUNCTION_TRACY();
+			SCOPED_BANDWIDTH_TRACY(num_items);
 
 			using namespace cub;
 
@@ -358,6 +362,7 @@ template<typename T>
 inline void SetElement(TGpuArray<T>& Array, uint64 Index, T Value)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
 	
 	FMemory::SetGPUValue(&Array[Index], Value);
 }
@@ -365,6 +370,7 @@ template<typename T>
 inline T GetElement(const TGpuArray<T>& Array, uint64 Index)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
 	
 	return FMemory::ReadGPUValue(&Array[Index]);
 }
@@ -377,6 +383,8 @@ inline void AdjacentDifference(
 	OutType FirstElement)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	checkEqual(In.Num(), Out.Num())
 
@@ -401,6 +409,8 @@ inline void AdjacentDifferenceWithTransform(
 	OutType FirstElement)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	checkEqual(In.Num(), Out.Num())
 
@@ -422,9 +432,11 @@ template<typename TypeIn, typename TypeOut, typename MapFunction, EMemoryType Me
 inline void ScatterPred(
 	const TFixedArray<TypeIn, MemoryType>& In,
 	MapFunction Map,
-	TGpuArray<TypeOut>& Out)
+	TFixedArray<TypeOut, MemoryType>& Out)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	CheckFunctionBounds<MemoryType>(Map, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjective<MemoryType>(In, Map, uint64(0), In.Num() - 1, Out.Num());
@@ -447,6 +459,8 @@ inline void Scatter(
 	TFixedArray<TypeOut, MemoryType>& Out)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	CheckArrayBounds<MemoryType>(Map, IndexType(0), IndexType(Out.Num() - 1));
 	CheckArrayIsInjective<MemoryType>(In, Map, Out.Num());
@@ -468,6 +482,8 @@ inline void ScatterWithTransform(
 	TFixedArray<TypeOut, MemoryType>& Out)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	CheckArrayBounds<MemoryType, IndexType>(Map, 0, IndexType(Out.Num()) - 1);
 	
@@ -493,6 +509,8 @@ inline void ScatterIf(
 	F Condition)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	CheckFunctionBoundsIf<MemoryType>(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjectiveIf<MemoryType>(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
@@ -518,6 +536,8 @@ inline void ScatterIfWithTransform(
 	F Condition)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	CheckFunctionBoundsIf<MemoryType>(Map, Condition, uint64(0), In.Num() - 1, uint64(0), Out.Num() - 1);
 	CheckFunctionIsInjectiveIf<MemoryType>(In, Map, Condition, uint64(0), In.Num() - 1, Out.Num());
@@ -536,18 +556,20 @@ inline void ScatterIfWithTransform(
 	CUDA_CHECK_LAST_ERROR();
 }
 
-template<typename InType, typename OutType, typename F>
+template<typename InType, typename OutType, typename F, EMemoryType MemoryType>
 inline void Transform(
-	const TGpuArray<InType>& In,
-	TGpuArray<OutType>& Out,
+	const TFixedArray<InType, MemoryType>& In,
+	TFixedArray<OutType, MemoryType>& Out,
 	F Lambda)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	checkEqual(In.Num(), Out.Num())
 	
 	thrust::transform(
-		GetExecutionPolicy<EMemoryType::GPU>(),
+		GetExecutionPolicy<MemoryType>(),
 		In.GetData(),
 		In.GetData() + In.Num(),
 		Out.GetData(),
@@ -565,6 +587,8 @@ inline void TransformIf(
 	F2 Condition)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(Num);
 	
 	thrust::transform_if(
 		GetExecutionPolicy<EMemoryType::GPU>(),
@@ -588,6 +612,8 @@ inline void MergePairs(
 	F Comp)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(InKeysA.Num() + InKeysB.Num());
 	
 	checkEqual(OutKeys.Num(), OutValues.Num());
 	checkEqual(InKeysA.Num() + InKeysB.Num(), OutValues.Num());
@@ -634,12 +660,30 @@ inline void MergePairs(
 	CUDA_CHECK_LAST_ERROR();
 }
 
-template<typename T>
-inline void MakeSequence(TGpuArray<T>& Array, T Init = 0)
+template<typename T, EMemoryType MemoryType>
+inline void MakeSequence(TFixedArray<T, MemoryType>& Array, T Init = 0)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(Array.Num());
 	
-	thrust::sequence(GetExecutionPolicy<EMemoryType::GPU>(), Array.GetData(), Array.GetData() + Array.Num(), Init);
+	thrust::sequence(GetExecutionPolicy<MemoryType>(), Array.GetData(), Array.GetData() + Array.Num(), Init);
+	
+	CUDA_CHECK_LAST_ERROR();
+}
+
+template<typename TKeys, typename TValues, EMemoryType MemoryType>
+inline void SortByKey(
+	TFixedArray<TKeys, MemoryType>& Keys,
+	TFixedArray<TValues, MemoryType>& Values)
+{
+	checkEqual(Keys.Num(), Values.Num());
+	
+	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
+	SCOPED_BANDWIDTH_TRACY(Keys.Num());
+	
+	thrust::sort_by_key(GetExecutionPolicy<MemoryType>(), Keys.GetData(), Keys.GetData() + Keys.Num(), Values.GetData());
 	
 	CUDA_CHECK_LAST_ERROR();
 }

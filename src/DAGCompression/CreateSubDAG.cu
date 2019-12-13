@@ -1,7 +1,9 @@
 #include "DAGCompression/DAGCompression.h"
 #include "GpuPrimitives.h"
+#include "Threadpool.h"
 
-HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const TGpuArray<uint64>& ChildrenArray)
+template<EMemoryType MemoryType>
+HOST_DEVICE uint64 HashChildren(const FChildrenIndices& ChildrenIndices, const TFixedArray<uint64, MemoryType>& ChildrenArray)
 {
 	uint64 ChildrenHashes[8];
 	for (int32 Index = 0; Index < 8; Index++)
@@ -40,6 +42,12 @@ void DAGCompression::ComputeHashes(FGpuLevel& Level, const TGpuArray<uint64>& Lo
 #endif
 }
 
+void DAGCompression::ComputeHashes(FCpuLevel& Level, const TCpuArray<uint64>& LowerLevelHashes)
+{
+	Level.Hashes = TCpuArray<uint64>("Hashes", Level.ChildrenIndices.Num());
+	Transform(Level.ChildrenIndices, Level.Hashes, [=] GPU_LAMBDA (const FChildrenIndices & Children) { return HashChildren(Children, LowerLevelHashes); });
+}
+
 TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments)
 {
 	PROFILE_FUNCTION();
@@ -48,6 +56,9 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 	auto NewFragments = TGpuArray<uint64>("Fragments", Fragments.Num());
 
 	{
+		PROFILE_SCOPE_TRACY("Sort");
+		SCOPED_BANDWIDTH_TRACY(Fragments.Num());
+		
 		const int32 Num = Cast<int32>(Fragments.Num());
 		const int32 NumBits = 3 * SUBDAG_LEVELS;
 		cub::DoubleBuffer<uint64> Keys(Fragments.GetData(), NewFragments.GetData());
@@ -69,6 +80,9 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 
 	int32 NumUnique;
 	{
+		PROFILE_SCOPE_TRACY("Unique");
+		SCOPED_BANDWIDTH_TRACY(Fragments.Num());
+		
 		// Don't check the color bits
 		const auto EqualityLambda = [] GPU_LAMBDA (uint64 A, uint64 B) { return (A << (64 - 3 * SUBDAG_LEVELS)) == (B << (64 - 3 * SUBDAG_LEVELS)); };
 		const int32 Num = Cast<int32>(Fragments.Num());
@@ -138,6 +152,9 @@ TGpuArray<uint64> DAGCompression::ExtractLeavesAndShiftReduceFragments(TGpuArray
 
 	TSingleGPUElement<int32> NumRunsGPU;
 	{
+		PROFILE_SCOPE_TRACY("ReduceByKey");
+		SCOPED_BANDWIDTH_TRACY(Num);
+
 		FTempStorage Storage;
 		CUDA_CHECKED_CALL cub::DeviceReduce::ReduceByKey(Storage.Ptr, Storage.Bytes, ParentsBits, NewFragments.GetData(), LeavesBits, Leaves.GetData(), NumRunsGPU.GetPtr(), thrust::bit_or<uint64>(), Num, DEFAULT_STREAM);
 		Storage.Allocate();
@@ -181,12 +198,17 @@ void SortLevelImpl(bool IsLeaf, FGpuLevel& Level, TGpuArray<uint32>& OutHashesTo
 
 		cub::DoubleBuffer<uint64> Keys(Level.Hashes.GetData(), SortedHashes.GetData());
 		cub::DoubleBuffer<uint32> Values(Sequence.GetData(), SortedHashesToHashes.GetData());
-		
-		FTempStorage Storage;
-		CUDA_CHECKED_CALL cub::DeviceRadixSort::SortPairs(Storage.Ptr, Storage.Bytes, Keys, Values, NumHashes, 0, 64, DEFAULT_STREAM);
-		Storage.Allocate();
-		CUDA_CHECKED_CALL cub::DeviceRadixSort::SortPairs(Storage.Ptr, Storage.Bytes, Keys, Values, NumHashes, 0, 64, DEFAULT_STREAM);
-		Storage.Free();
+
+		{
+			PROFILE_SCOPE_TRACY("SortPairs");
+			SCOPED_BANDWIDTH_TRACY(NumHashes);
+
+			FTempStorage Storage;
+			CUDA_CHECKED_CALL cub::DeviceRadixSort::SortPairs(Storage.Ptr, Storage.Bytes, Keys, Values, NumHashes, 0, 64, DEFAULT_STREAM);
+			Storage.Allocate();
+			CUDA_CHECKED_CALL cub::DeviceRadixSort::SortPairs(Storage.Ptr, Storage.Bytes, Keys, Values, NumHashes, 0, 64, DEFAULT_STREAM);
+			Storage.Free();
+		}
 
 		if (Keys.Current() != SortedHashes.GetData())
 		{
@@ -210,6 +232,9 @@ void SortLevelImpl(bool IsLeaf, FGpuLevel& Level, TGpuArray<uint32>& OutHashesTo
 
 	auto SortedHashesToUniqueHashes = TGpuArray<uint32>("SortedHashesToUniqueHashes", NumHashes);
 	{
+		PROFILE_SCOPE_TRACY("InclusiveSum");
+		SCOPED_BANDWIDTH_TRACY(NumHashes);
+		
 		FTempStorage Storage;
 		CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(Storage.Ptr, Storage.Bytes, SortedHashesFlags.GetData(), SortedHashesToUniqueHashes.GetData(), NumHashes, DEFAULT_STREAM);
 		Storage.Allocate();
@@ -250,6 +275,71 @@ void SortLevelImpl(bool IsLeaf, FGpuLevel& Level, TGpuArray<uint32>& OutHashesTo
 	CheckLevelIndices(Level);
 }
 
+void SortLevelImpl(bool IsLeaf, FCpuLevel& Level, TCpuArray<uint32>& OutHashesToSortedUniqueHashes)
+{
+	PROFILE_FUNCTION_TRACY();
+
+	using namespace DAGCompression;
+	
+	CheckLevelIndices(Level);
+
+	const int32 NumHashes = Cast<int32>(Level.Hashes.Num());
+	auto SortedHashesToHashes = TCpuArray<uint32>("SortedHashesToHashes", NumHashes);
+
+	MakeSequence(SortedHashesToHashes);
+	auto SortedHashes = std::move(Level.Hashes);
+	SortByKey(SortedHashes, SortedHashesToHashes);
+	CheckIsSorted(SortedHashes);
+
+	auto SortedHashesToUniqueHashes = TCpuArray<uint32>("SortedHashesToUniqueHashes", NumHashes);
+	uint32 NumUniques;
+	{
+		int32 UniqueIndex = 0;
+		uint64 Last = SortedHashes[0];
+		SortedHashesToUniqueHashes[0] = 0;
+		for (int32 Index = 1; Index < NumHashes; Index++)
+		{
+			const uint64 Hash = SortedHashes[Index];
+			if (Hash != Last)
+			{
+				Last = Hash;
+				UniqueIndex++;
+			}
+			SortedHashesToUniqueHashes[Index] = UniqueIndex;
+		}
+		NumUniques = UniqueIndex + 1;
+	}
+
+	Level.Hashes = TCpuArray<uint64>(IsLeaf ? "Leaves" : "Hashes", NumUniques);
+	Scatter(SortedHashes, SortedHashesToUniqueHashes, Level.Hashes);
+	SortedHashes.Free();
+	CheckIsSorted(Level.Hashes);
+
+	OutHashesToSortedUniqueHashes = TCpuArray<uint32>("HashesToSortedUniqueHashes", NumHashes);
+	Scatter(SortedHashesToUniqueHashes, SortedHashesToHashes, OutHashesToSortedUniqueHashes);
+	CheckArrayBounds(OutHashesToSortedUniqueHashes, 0u, NumUniques - 1);
+	SortedHashesToHashes.Free();
+	SortedHashesToUniqueHashes.Free();
+
+	if (!IsLeaf)
+	{
+		{
+			auto NewChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", NumUniques);
+			Scatter(Level.ChildrenIndices, OutHashesToSortedUniqueHashes, NewChildrenIndices);
+			Level.ChildrenIndices.Free();
+			Level.ChildrenIndices = NewChildrenIndices;
+		}
+		{
+			auto NewChildMasks = TCpuArray<uint8>("ChildMasks", NumUniques);
+			Scatter(Level.ChildMasks, OutHashesToSortedUniqueHashes, NewChildMasks);
+			Level.ChildMasks.Free();
+			Level.ChildMasks = NewChildMasks;
+		}
+	}
+
+	CheckLevelIndices(Level);
+}
+
 void DAGCompression::SortLeaves(TGpuArray<uint64>& Leaves, TGpuArray<uint32>& OutHashesToSortedUniqueHashes)
 {
 	FGpuLevel Level;
@@ -259,6 +349,11 @@ void DAGCompression::SortLeaves(TGpuArray<uint64>& Leaves, TGpuArray<uint32>& Ou
 }
 
 void DAGCompression::SortLevel(FGpuLevel& Level, TGpuArray<uint32>& OutHashesToSortedUniqueHashes)
+{
+	SortLevelImpl(false, Level, OutHashesToSortedUniqueHashes);
+}
+
+void DAGCompression::SortLevel(FCpuLevel& Level, TCpuArray<uint32>& OutHashesToSortedUniqueHashes)
 {
 	SortLevelImpl(false, Level, OutHashesToSortedUniqueHashes);
 }
@@ -282,6 +377,9 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>&
 			auto UniqueParentsFlags = TGpuArray<uint32>("UniqueParentsFlags", Num);
 			AdjacentDifferenceWithTransform(Fragments, ParentsTransform, UniqueParentsFlags, thrust::not_equal_to<uint64>(), 0u);
 			{
+				PROFILE_SCOPE_TRACY("InclusiveSum");
+				SCOPED_BANDWIDTH_TRACY(Num);
+
 				FTempStorage Storage;
 				CUDA_CHECKED_CALL cub::DeviceScan::InclusiveSum(Storage.Ptr, Storage.Bytes, UniqueParentsFlags.GetData(), UniqueParentsSum.GetData(), Num, DEFAULT_STREAM);
 				Storage.Allocate();
@@ -313,6 +411,9 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>&
 
 		TSingleGPUElement<int32> NumRunsGPU;
 
+		PROFILE_SCOPE_TRACY("ReduceByKey");
+		SCOPED_BANDWIDTH_TRACY(Num);
+
 		FTempStorage Storage;
 		CUDA_CHECKED_CALL cub::DeviceReduce::ReduceByKey(Storage.Ptr, Storage.Bytes, ParentsBits, NewFragments.GetData(), ChildrenBits, OutLevel.ChildMasks.GetData(), NumRunsGPU.GetPtr(), thrust::bit_or<uint8>(), Num, DEFAULT_STREAM);
 		Storage.Allocate();
@@ -329,12 +430,92 @@ FGpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TGpuArray<uint64>&
 	return OutLevel;
 }
 
-FCpuDag DAGCompression::CreateSubDAG(TGpuArray<uint64> InFragments, FTimeCounter& SortFragmentsTime)
+FCpuLevel DAGCompression::ExtractLevelAndShiftReduceFragments(TCpuArray<uint64>& Fragments, const TCpuArray<uint32>& FragmentIndicesToChildrenIndices)
+{
+	PROFILE_FUNCTION_TRACY();
+
+	FCpuLevel OutLevel;
+
+	const int32 Num = Cast<int32>(Fragments.Num());
+
+	const auto ParentsTransform = [] GPU_LAMBDA (uint64 Code) { return Code >> 3; };
+	const auto ChildrenTransform = [] GPU_LAMBDA (uint64 Code) { return uint8(1u << (Code & 0b111)); };
+
+	// First create the mapping & get the number of unique parents
+	int32 NumUniqueParents;
+	{
+		auto UniqueParentsSum = TCpuArray<uint32>("UniqueParentsSum", Num);
+
+		{
+			int32 UniqueIndex = 0;
+			uint64 Last = ParentsTransform(Fragments[0]);
+			UniqueParentsSum[0] = 0;
+			for (int32 Index = 1; Index < Fragments.Num(); Index++)
+			{
+				const uint64 Fragment = ParentsTransform(Fragments[Index]);
+				if (Fragment != Last)
+				{
+					Last = Fragment;
+					UniqueIndex++;
+				}
+				UniqueParentsSum[Index] = UniqueIndex;
+			}
+			NumUniqueParents = UniqueIndex + 1;
+		}
+
+		checkInfEqual(NumUniqueParents, Num);
+
+		OutLevel.ChildrenIndices = TCpuArray<FChildrenIndices>("ChildrenIndices", NumUniqueParents);
+		OutLevel.ChildrenIndices.MemSet(0xFF);
+		{
+			const auto CompactChildrenToExpandedChildren = [=] GPU_LAMBDA (uint64 Index) { return (Fragments[Index] & 0b111) + 8 * UniqueParentsSum[Index]; };
+			auto Out = OutLevel.ChildrenIndices.CastTo<uint32>();
+			ScatterPred(FragmentIndicesToChildrenIndices, CompactChildrenToExpandedChildren, Out);
+		}
+
+		UniqueParentsSum.Free();
+	}
+
+	auto NewFragments = TCpuArray<uint64>("Fragments", NumUniqueParents);
+	OutLevel.ChildMasks = TCpuArray<uint8>("ChildMasks", NumUniqueParents);
+	{
+		int32 UniqueIndex = 0;
+		uint64 Last = ParentsTransform(Fragments[0]);
+		NewFragments[0] = ParentsTransform(Fragments[0]);
+		OutLevel.ChildMasks[0] = ChildrenTransform(Fragments[0]);
+
+		for (int32 Index = 1; Index < Num; Index++)
+		{
+			const uint64 Parent = ParentsTransform(Fragments[Index]);
+			if (Parent != Last)
+			{
+				Last = Parent;
+				UniqueIndex++;
+				NewFragments[UniqueIndex] = Parent;
+				OutLevel.ChildMasks[UniqueIndex] = ChildrenTransform(Fragments[Index]);
+			}
+			else
+			{
+				OutLevel.ChildMasks[UniqueIndex] |= ChildrenTransform(Fragments[Index]);
+			}
+		}
+		
+		checkEqual(UniqueIndex + 1, NumUniqueParents);
+	}
+
+	Fragments.Free();
+	Fragments = NewFragments;
+
+	CheckLevelIndices(OutLevel);
+	return OutLevel;
+}
+
+std::shared_ptr<FCpuDag> DAGCompression::CreateSubDAG(TGpuArray<uint64> InFragments, FTimeCounter& SortFragmentsTime, FThreadPool& Pool)
 {
 	PROFILE_FUNCTION();
 	
-	FCpuDag CpuDag;
-	CpuDag.Levels.resize(SUBDAG_LEVELS - 2);
+	std::shared_ptr<FCpuDag> CpuDag = std::make_shared<FCpuDag>();
+	CpuDag->Levels.resize(SUBDAG_LEVELS - 2);
 
 	if (InFragments.Num() == 0)
 	{
@@ -358,31 +539,72 @@ FCpuDag DAGCompression::CreateSubDAG(TGpuArray<uint64> InFragments, FTimeCounter
 
 	TGpuArray<uint32> FragmentIndicesToChildrenIndices;
 	SortLeaves(Leaves, FragmentIndicesToChildrenIndices);
-	CpuDag.Leaves = Leaves.CreateCPU();
-	
-	auto PreviousLevelHashes = Leaves;
-	for (int32 LevelDepth = SUBDAG_LEVELS - 3; LevelDepth >= 0; LevelDepth--)
+	CpuDag->Leaves = Leaves.CreateCPU();
+
+#if 0
 	{
-		PROFILE_SCOPE("Level %d", LevelDepth);
-		LOG_DEBUG("Level %d", LevelDepth);
-		
-		FGpuLevel Level = ExtractLevelAndShiftReduceFragments(Fragments, FragmentIndicesToChildrenIndices);
-		FragmentIndicesToChildrenIndices.Free();
+		TGpuArray<uint64> PreviousLevelHashes = Leaves;
+		for (int32 LevelDepth = SUBDAG_LEVELS - 3; LevelDepth >= 0; LevelDepth--)
+		{			
+			PROFILE_SCOPE("Level %d GPU", LevelDepth);
 
-		ComputeHashes(Level, PreviousLevelHashes);
+			FGpuLevel Level = ExtractLevelAndShiftReduceFragments(Fragments, FragmentIndicesToChildrenIndices);
+			FragmentIndicesToChildrenIndices.Free();
+
+			ComputeHashes(Level, PreviousLevelHashes);
+			PreviousLevelHashes.Free();
+
+			SortLevel(Level, FragmentIndicesToChildrenIndices);
+			CheckIsSorted(Level.Hashes);
+			CheckLevelIndices(Level);
+
+			CpuDag->Levels[LevelDepth] = Level.ToCPU();
+			Level.Free(false);
+			PreviousLevelHashes = Level.Hashes;
+		}
 		PreviousLevelHashes.Free();
-
-		SortLevel(Level, FragmentIndicesToChildrenIndices);
-
-		CpuDag.Levels[LevelDepth] = Level.ToCPU();
-		Level.Free(false);
-		PreviousLevelHashes = Level.Hashes;
 	}
-	check(PreviousLevelHashes.Num() == 1);
-	PreviousLevelHashes.Free();
+#else
+	Leaves.Free();
 
-	FragmentIndicesToChildrenIndices.Free();
-	Fragments.Free();
+	Pool.Enqueue([CpuDag, InFragmentIndicesToChildrenIndices = FragmentIndicesToChildrenIndices, InFragments = Fragments]()
+	{
+		auto FragmentIndicesToChildrenIndices_GPU = InFragmentIndicesToChildrenIndices;
+		auto Fragments_GPU = InFragments;
+
+		auto FragmentIndicesToChildrenIndices = FragmentIndicesToChildrenIndices_GPU.CreateCPU();
+		auto Fragments = Fragments_GPU.CreateCPU();
+
+		FragmentIndicesToChildrenIndices_GPU.Free();
+		Fragments_GPU.Free();
+
+		for (int32 LevelDepth = SUBDAG_LEVELS - 3; LevelDepth >= 0; LevelDepth--)
+		{
+			PROFILE_SCOPE("Level %d CPU", LevelDepth);
+
+			FCpuLevel Level = ExtractLevelAndShiftReduceFragments(Fragments, FragmentIndicesToChildrenIndices);
+			FragmentIndicesToChildrenIndices.Free();
+
+			const auto& PreviousLevelHashes_CPU = LevelDepth + 1 == SUBDAG_LEVELS - 2 ? CpuDag->Leaves : CpuDag->Levels[LevelDepth + 1].Hashes;
+			ComputeHashes(Level, PreviousLevelHashes_CPU);
+
+			SortLevel(Level, FragmentIndicesToChildrenIndices);
+			CheckIsSorted(Level.Hashes);
+			CheckLevelIndices(Level);
+
+			CpuDag->Levels[LevelDepth] = Level;
+		}
+
+		FragmentIndicesToChildrenIndices.Free();
+		Fragments.Free();
+
+		for (auto& Level : CpuDag->Levels)
+		{
+			CheckIsSorted(Level.Hashes);
+			CheckLevelIndices(Level);
+		}
+	});
+#endif
 
 	return CpuDag;
 }
