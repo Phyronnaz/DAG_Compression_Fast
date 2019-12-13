@@ -2,15 +2,15 @@
 
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
-#define ENABLE_CHECKS 0
+#define ENABLE_CHECKS 1
 #define DEBUG_GPU_ARRAYS 0
 
 #define ENABLE_COLORS 0
 #define TOP_LEVEL MAX(LEVELS - 8, 0)
 
-#define LEVELS 15
-#define SUBDAG_LEVELS 13
-#define SUBDAG_MAX_NUM_FRAGMENTS (500 * 1024 * 1024)
+#define LEVELS 16
+#define SUBDAG_LEVELS 12
+#define SUBDAG_MAX_NUM_FRAGMENTS (150 * 1024 * 1024)
 
 #define VOXELIZER_LEVELS 10
 #define VOXELIZER_MAX_NUM_FRAGMENTS (10 * 1024 * 1024) // Needs to be as small as possible: larger buffer size leads to 10x slower rasterization

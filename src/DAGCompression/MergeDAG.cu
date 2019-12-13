@@ -411,6 +411,11 @@ std::shared_ptr<FCpuDag> DAGCompression::MergeDAGs(FCpuDag A, FCpuDag B, FThread
 			PreviousIndicesBToMergedIndices_CPU.Free();
 		});
 	}
+	else
+	{
+		PreviousIndicesAToMergedIndices.Free();
+		PreviousIndicesBToMergedIndices.Free();
+	}
 
 	return MergedCpuDag;
 }

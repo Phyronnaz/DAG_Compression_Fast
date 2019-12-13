@@ -323,6 +323,7 @@ TGpuArray<uint64> FVoxelizer::GenerateFragments(const FAABB& AABB) const
 	}
 	glUseProgram(0);
 	checkfAlways(FragCount <= TexDim, "TexDim too low: is %u, needs to be >= %u", TexDim, FragCount);
+	ZONE_METADATA("%u fragments", FragCount);
 	return { Positions[ActiveBuffer], FragCount };
 }
 

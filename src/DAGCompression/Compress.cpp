@@ -67,6 +67,8 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 			for (uint64 Fragment : Fragments)
 			{
 				const uint64 MortonCode = Fragment & ((uint64(1) << 40) - 1); // Remove colors
+				IsEmpty[MortonCode] = false;
+#if 1
 				const uint3 Position = Utils::MortonDecode64<uint3>(MortonCode);
 				// Add neighbors to avoid false positives
 				for (int32 X = -1; X < 2; X++)
@@ -83,6 +85,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 						}
 					}
 				}
+#endif
 			}
 		}
 		std::vector<std::shared_ptr<FCpuDag>> DagsToMerge;

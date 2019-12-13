@@ -98,7 +98,7 @@ public:
 		{
 			const auto ShouldWakeup = [this]() { return Tasks.IsEmpty() && WaitingThreads == Threads.size(); };
 			FUniqueLock Lock(OnAllWaitingMutex);
-			OnAllWaiting.wait(Lock, ShouldWakeup);
+			while (!ShouldWakeup()) OnAllWaiting.wait_for(Lock, std::chrono::milliseconds(1));
 		}
 	}
 	void Enqueue(FTask Task)
@@ -145,7 +145,7 @@ private:
 					OnAllWaiting.notify_all();
 				}
 				const auto ShouldWakeup = [this]() { return Stop || !Tasks.IsEmpty(); };
-				OnEnqueue.wait(Lock, ShouldWakeup);
+				while (!ShouldWakeup()) OnEnqueue.wait_for(Lock, std::chrono::milliseconds(1));
 				WaitingThreads--;
 			}
 		}
