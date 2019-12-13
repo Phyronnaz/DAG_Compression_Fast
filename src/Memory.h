@@ -149,6 +149,7 @@ struct FTempStorage
 	}
 	~FTempStorage()
 	{
+		CUDA_CHECK_LAST_ERROR();
 		check(!Ptr);
 		check(Bytes == 0);
 	}

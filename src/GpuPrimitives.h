@@ -389,6 +389,8 @@ inline void AdjacentDifference(
 		BinaryOp);
 	
 	SetElement(Out, 0, FirstElement);
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename InType, typename OutType, typename F1, typename F2>
@@ -412,6 +414,8 @@ inline void AdjacentDifferenceWithTransform(
 		BinaryOp);
 	
 	SetElement(Out, 0, FirstElement);
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename TypeIn, typename TypeOut, typename MapFunction, EMemoryType MemoryType>
@@ -432,6 +436,8 @@ inline void ScatterPred(
 		In.GetData() + In.Num(),
 		MapTransform,
 		Out.GetData());
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename TypeIn, typename TypeOut, typename IndexType, EMemoryType MemoryType>
@@ -451,6 +457,8 @@ inline void Scatter(
 		In.GetData() + In.Num(),
 		Map.GetData(),
 		Out.GetData());
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename TypeIn, typename TypeOut, typename InF, typename IndexType, EMemoryType MemoryType>
@@ -473,6 +481,8 @@ inline void ScatterWithTransform(
 		It + In.Num(),
 		Map.GetData(),
 		Out.GetData());
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename TypeIn, typename TypeOut, typename MapFunction, typename F, EMemoryType MemoryType>
@@ -496,6 +506,8 @@ inline void ScatterIf(
 		thrust::make_counting_iterator<uint64>(0),
 		Out.GetData(),
 		Condition);
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename TypeIn, typename TypeOut, typename InF, typename MapFunction, typename F, EMemoryType MemoryType>
@@ -520,6 +532,8 @@ inline void ScatterIfWithTransform(
 		thrust::make_counting_iterator<uint64>(0),
 		Out.GetData(),
 		Condition);
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename InType, typename OutType, typename F>
@@ -538,6 +552,8 @@ inline void Transform(
 		In.GetData() + In.Num(),
 		Out.GetData(),
 		Lambda);
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename InType, typename OutType, typename F1, typename F2>
@@ -557,6 +573,8 @@ inline void TransformIf(
 		Out,
 		Lambda,
 		Condition);
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename TValueIt, typename TKey, typename TValue, typename F>
@@ -612,6 +630,8 @@ inline void MergePairs(
 		OutKeys.GetData(), OutValues.GetData(),
 		Comp,
 		*mgpu_context);
+	
+	CUDA_CHECK_LAST_ERROR();
 }
 
 template<typename T>
@@ -620,4 +640,6 @@ inline void MakeSequence(TGpuArray<T>& Array, T Init = 0)
 	CUDA_CHECK_LAST_ERROR();
 	
 	thrust::sequence(GetExecutionPolicy<EMemoryType::GPU>(), Array.GetData(), Array.GetData() + Array.Num(), Init);
+	
+	CUDA_CHECK_LAST_ERROR();
 }

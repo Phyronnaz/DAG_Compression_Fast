@@ -343,21 +343,22 @@ using FUniqueLock = std::unique_lock<LockableBase(std::mutex)>;
 #define DEFAULT_STREAM GetDefaultStream()
 
 #define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
-#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize();
+#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize(); CUDA_CHECKED_CALL cudaDeviceSynchronize();
 #define CUDA_CHECK_LAST_ERROR() CUDA_CHECKED_CALL cudaGetLastError(); CUDA_SYNCHRONIZE_STREAM()
 
-inline auto GetDefaultStream()
+inline cudaStream_t GetDefaultStream()
 {
-	thread_local cudaStream_t Stream = nullptr;
+	return 0;
+	/*thread_local cudaStream_t Stream = nullptr;
 	if (!Stream)
 	{
 		CUDA_CHECKED_CALL cudaStreamCreate(&Stream);
 	}
 	check(Stream);
-	return Stream;
+	return Stream;*/
 }
 
-inline auto StreamSynchronize()
+inline cudaError_t StreamSynchronize()
 {
 	PROFILE_FUNCTION_TRACY();
 	return cudaStreamSynchronize(DEFAULT_STREAM);
