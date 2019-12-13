@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include <vector>
+#include <cfloat>
 #include "gmath/Vector3.h"
 
 /**

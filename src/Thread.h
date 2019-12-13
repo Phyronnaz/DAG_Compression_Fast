@@ -1,12 +1,14 @@
 #pragma once
 
 #include "Core.h"
+#include "Array.h"
 #include <thread>
 #include <atomic>
 #include <functional>
 #include <mutex>
 #include <queue>
 #include <unordered_set>
+#include <condition_variable>
 
 template<typename T>
 struct TOptional
@@ -27,7 +29,7 @@ struct TOptional
 		check(IsValid());
 		return Value;
 	}
-	
+
 private:
 	T Value;
 	bool HasValue = false;

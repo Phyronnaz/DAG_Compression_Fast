@@ -3,6 +3,8 @@
 #include "Core.h"
 #include "Array.h"
 #include "Utils/Aabb.h"
+#include <memory>
+#include <thread>
 
 class FThreadPool;
 class FVoxelizer;

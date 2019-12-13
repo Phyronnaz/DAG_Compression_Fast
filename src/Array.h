@@ -3,6 +3,7 @@
 #include "Core.h"
 #include "Utils.h"
 #include "Memory.h"
+#include <cstring>
 
 template<typename ElementType, uint64 ArraySize>
 struct TStaticArray

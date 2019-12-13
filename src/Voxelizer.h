@@ -3,6 +3,7 @@
 #include "Core.h"
 #include "GL/glew.h"
 #include "Array.h"
+#include <vector>
 
 class FAABB;
 struct FScene;

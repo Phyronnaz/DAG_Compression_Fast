@@ -23,7 +23,7 @@ template<typename T> constexpr HOST_DEVICE T make_vector3(const decltype(T::x) x
 HOST_DEVICE constexpr T operator OP (const decltype(T::x) a, const T& b) { return make_vector3<T>(a OP b.x, a OP b.y, a OP b.z); } \
 HOST_DEVICE constexpr T operator OP (const T& a, const decltype(T::x) b) { return make_vector3<T>(a.x OP b, a.y OP b, a.z OP b); } \
 HOST_DEVICE constexpr T operator OP (const T& a, const T& b) { return make_vector3<T>(a.x OP b.x, a.y OP b.y, a.z OP b.z); } \
-HOST_DEVICE constexpr T& operator OP= (T& a, const T& b) { a = a OP b; return a; }
+HOST_DEVICE constexpr T& operator JOIN(OP, =)(T& a, const T& b) { a = a OP b; return a; }
 
 #define VECTOR_OP(T) \
 BIN_VECTOR_OP(T, +) \
@@ -43,7 +43,7 @@ HOST_DEVICE constexpr T min(const T& a, const T& b) { return make_vector3<T>(con
 #define VECTOR_FLOAT_OP(T) \
 HOST_DEVICE constexpr T operator - (T a) { return make_vector3<T>(-a.x, -a.y, -a.z); } \
 HOST_DEVICE auto length(T a) { return (decltype(T::x))sqrt(dot(a, a)); } \
-HOST_DEVICE constexpr T normalize(T a) { return (1 / length(a)) * a; } \
+HOST_DEVICE T normalize(T a) { return (1 / length(a)) * a; } \
 HOST_DEVICE constexpr T abs(const T& v) { return make_vector3<T>(abs(v.x), abs(v.y), abs(v.z)); }; \
 HOST_DEVICE constexpr T ceil(const T& v) { return make_vector3<T>(std::ceil(v.x), std::ceil(v.y), std::ceil(v.z)); }; \
 HOST_DEVICE constexpr T round(const T& v) { return make_vector3<T>(std::round(v.x), std::round(v.y), std::round(v.z)); };

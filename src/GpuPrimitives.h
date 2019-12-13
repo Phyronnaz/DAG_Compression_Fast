@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include "Utils.h"
+#include "device_atomic_functions.h"
 
 #pragma push_macro("check")
 #undef check
@@ -53,10 +54,11 @@ struct FScopeBandwidthReporter
 template<EMemoryType MemoryType>
 auto GetExecutionPolicy();
 
+struct my_policy : thrust::system::cpp::execution_policy<my_policy> {};
+
 template<>
 inline auto GetExecutionPolicy<EMemoryType::CPU>()
 {
-	struct my_policy : thrust::system::cpp::execution_policy<my_policy> {};
 	static auto ExecutionPolicy = my_policy();
 	return ExecutionPolicy;
 }
@@ -232,7 +234,8 @@ inline void CheckFunctionIsInjectiveIf(
 			for (int32 WordIndex = 0; WordIndex < sizeof(TData) / 4; WordIndex++)
 			{
 				const uint32 ExistingWord = atomicExch(&DataTestWords[WordIndex], DataValueWords[WordIndex]);
-				const uint64 PreviousIndex = atomicExch(const_cast<uint64*>(&PreviousIndicesArray[Output]), uint64(Input));
+				const uint64 PreviousIndex = atomicExch(
+                        const_cast<unsigned long long int*>(reinterpret_cast<const unsigned long long int*>(&PreviousIndicesArray[Output])), uint64(Input));
 				if (ExistingWord == 0) continue;
 				if (ExistingWord == DataValueWords[WordIndex]) continue;
 				printf("Different words: existing 0x%08x, writing 0x%08x. Index: %9" PRIu64 ". Mapping: %9" PRIu64 ". Word Index: %4u. Previous Write Index: %" PRIu64 "\n",

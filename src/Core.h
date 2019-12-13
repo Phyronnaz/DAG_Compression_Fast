@@ -279,6 +279,19 @@ HOST_DEVICE T Cast(U Value)
 #define NAME_THREAD_TRACY(Name)
 #endif
 
+#define JOIN_IMPL(A, B) A ## B
+#define JOIN(A, B) JOIN_IMPL(A, B)
+
+#define COLOR_BLACK 0x000000
+#define COLOR_RED 0xFF0000
+#define COLOR_GREEN 0x00FF00
+#define COLOR_BLUE 0x0000FF
+#define COLOR_YELLOW 0xFFFF00
+
+#ifdef _MSC_VER
+#define MARK_NV(Name) nvtxMarkA(Name)
+#define NAME_THREAD_NV(Name) nvtxNameOsThreadA(GetCurrentThreadId(), Name);
+
 struct FNVExtScope
 {
 	template<typename... TArgs>
@@ -286,7 +299,7 @@ struct FNVExtScope
 	{
 		const int32 Size = sprintf(String, Format, Args...);
 		checkInfEqual(Size, 1024);
-		
+
 		eventAttrib.version = NVTX_VERSION;
 		eventAttrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
 		eventAttrib.colorType = NVTX_COLOR_ARGB;
@@ -299,24 +312,16 @@ struct FNVExtScope
 	{
 		nvtxRangePop();
 	}
-	
+
     nvtxEventAttributes_t eventAttrib = {0};
 	char String[1024];
 };
-
-#define JOIN_IMPL(A, B) A ## B
-#define JOIN(A, B) JOIN_IMPL(A, B)
-
-#define COLOR_BLACK 0x000000
-#define COLOR_RED 0xFF0000
-#define COLOR_GREEN 0x00FF00
-#define COLOR_BLUE 0x0000FF
-#define COLOR_YELLOW 0xFFFF00
-
 #define PROFILE_SCOPE_COLOR_NV(Color, Format, ...) FNVExtScope JOIN(ScopePerf, __LINE__)(Color, Format, ##__VA_ARGS__);
-
-#define MARK_NV(Name) nvtxMarkA(Name)
-#define NAME_THREAD_NV(Name) nvtxNameOsThreadA(GetCurrentThreadId(), Name);
+#else
+#define MARK_NV(Name)
+#define NAME_THREAD_NV(Name)
+#define PROFILE_SCOPE_COLOR_NV(Color, Format, ...)
+#endif
 
 #define PROFILE_SCOPE_COLOR(Color, Format, ...) PROFILE_SCOPE_COLOR_NV(Color, Format, ##__VA_ARGS__); PROFILE_SCOPE_COLOR_TRACY(Color, Format, ##__VA_ARGS__);
 #define PROFILE_SCOPE(Format, ...) PROFILE_SCOPE_COLOR_NV(COLOR_RED, Format, ##__VA_ARGS__); PROFILE_SCOPE_COLOR_TRACY(COLOR_BLACK, Format, ##__VA_ARGS__);

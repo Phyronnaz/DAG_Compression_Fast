@@ -5,6 +5,7 @@
 #include <functional>
 #include <queue>
 #include <atomic>
+#include <condition_variable>
 
 template<class T>
 class TSafeQueue
