@@ -2,7 +2,7 @@
 
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
-#define ENABLE_CHECKS 1
+#define ENABLE_CHECKS 0
 #define DEBUG_GPU_ARRAYS 0
 
 #define ENABLE_COLORS 0
@@ -343,19 +343,18 @@ using FUniqueLock = std::unique_lock<LockableBase(std::mutex)>;
 #define DEFAULT_STREAM GetDefaultStream()
 
 #define CUDA_CHECKED_CALL ::detail::CudaErrorChecker(__LINE__,__FILE__) =
-#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize(); CUDA_CHECKED_CALL cudaDeviceSynchronize();
-#define CUDA_CHECK_LAST_ERROR() CUDA_CHECKED_CALL cudaGetLastError(); CUDA_SYNCHRONIZE_STREAM()
+#define CUDA_SYNCHRONIZE_STREAM() CUDA_CHECKED_CALL StreamSynchronize();
+#define CUDA_CHECK_LAST_ERROR() CUDA_CHECKED_CALL cudaGetLastError();
 
 inline cudaStream_t GetDefaultStream()
 {
-	return 0;
-	/*thread_local cudaStream_t Stream = nullptr;
+	thread_local cudaStream_t Stream = nullptr;
 	if (!Stream)
 	{
 		CUDA_CHECKED_CALL cudaStreamCreate(&Stream);
 	}
 	check(Stream);
-	return Stream;*/
+	return Stream;
 }
 
 inline cudaError_t StreamSynchronize()

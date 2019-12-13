@@ -16,4 +16,6 @@ void DAGCompression::AddParentToFragments(const TGpuArray<uint64>& Src, TGpuArra
 	{
 		Transform(Src, Dst, [=] GPU_LAMBDA(uint64 Value) { return Value | (uint64(Parent) << (3 * ParentLevel)); });
 	}
+
+	CUDA_SYNCHRONIZE_STREAM();
 }
