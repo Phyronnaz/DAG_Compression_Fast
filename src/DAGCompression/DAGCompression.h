@@ -105,6 +105,7 @@ struct FFinalDag
 namespace DAGCompression
 {
 	FFinalDag Compress_SingleThreaded(const FScene& Scene, const FAABB& SceneAABB);
+	FFinalDag Compress_SingleThreadedBig(const FScene& Scene, const FAABB& SceneAABB);
 	//FFinalDag Compress_MultiThreaded(const FScene& Scene, const FAABB& SceneAABB);
 
 	std::vector<FAABB> GetAABBs(const FAABB& AABB, int32 NumberOfSplits);
@@ -116,7 +117,7 @@ namespace DAGCompression
 	FFinalDag CreateFinalDAG(FCpuDag CpuDag);
 
 	// Will free Fragments
-	TGpuArray<uint64> SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments);
+	TGpuArray<uint64> SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments, uint32 Depth);
 	TGpuArray<uint32> ExtractColorsAndFixFragments(TGpuArray<uint64>& Fragments);
 	TGpuArray<uint64> ExtractLeavesAndShiftReduceFragments(TGpuArray<uint64>& Fragments);
 

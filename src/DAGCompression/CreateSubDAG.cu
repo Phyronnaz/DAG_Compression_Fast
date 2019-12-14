@@ -48,7 +48,7 @@ void DAGCompression::ComputeHashes(FCpuLevel& Level, const TCpuArray<uint64>& Lo
 	Transform(Level.ChildrenIndices, Level.Hashes, [=] GPU_LAMBDA (const FChildrenIndices & Children) { return HashChildren(Children, LowerLevelHashes); });
 }
 
-TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments)
+TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uint64> Fragments, uint32 Depth)
 {
 	PROFILE_FUNCTION();
 	SCOPED_BANDWIDTH_TRACY(Fragments.Num());
@@ -60,7 +60,7 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 		SCOPED_BANDWIDTH_TRACY(Fragments.Num());
 		
 		const int32 Num = Cast<int32>(Fragments.Num());
-		const int32 NumBits = 3 * SUBDAG_LEVELS;
+		const int32 NumBits = 3 * Depth;
 		cub::DoubleBuffer<uint64> Keys(Fragments.GetData(), NewFragments.GetData());
 
 		FTempStorage Storage;
@@ -101,22 +101,11 @@ TGpuArray<uint64> DAGCompression::SortFragmentsAndRemoveDuplicates(TGpuArray<uin
 
 	// Unique data is in Fragments
 
-	// Shrink if less than 95% of original size
-	if (NumUnique < Fragments.Num() * 0.95)
-	{
-		NewFragments.Free();
-		NewFragments = TGpuArray<uint64>("Fragments", NumUnique);
-		FMemory::CudaMemcpy(NewFragments.GetData(), Fragments.GetData(), NumUnique * sizeof(uint64), cudaMemcpyDeviceToDevice);
-	}
-	else
-	{
-		std::swap(NewFragments, Fragments);
-		auto Temp = NewFragments;
-		NewFragments.Reset();
-		NewFragments = { Temp.GetData(), uint64(NumUnique) };
-	}
-	
+	std::swap(NewFragments, Fragments);
 	Fragments.Free();
+
+	// We could shrink NewFragments, but it's probably not worth the alloc/dealloc + copy
+	NewFragments.SetNumInternal(NumUnique);
 	
 	return NewFragments;
 }
@@ -139,7 +128,7 @@ TGpuArray<uint64> DAGCompression::ExtractLeavesAndShiftReduceFragments(TGpuArray
 	const auto ParentsTransform = [] GPU_LAMBDA (uint64 Code) { return Code >> 6; };
 	const auto LeavesTransform = [] GPU_LAMBDA (uint64 Code) { return uint64(1) << (Code & 0b111111); };
 
-	const int32 MinAverageVoxelsPer64Leaf = 1; // TODO higher?
+	const int32 MinAverageVoxelsPer64Leaf = 2; // TODO higher?
 	// TODO compute exact num?
 	
 	auto NewFragments = TGpuArray<uint64>("Fragments", Fragments.Num() / MinAverageVoxelsPer64Leaf);
@@ -165,9 +154,10 @@ TGpuArray<uint64> DAGCompression::ExtractLeavesAndShiftReduceFragments(TGpuArray
 	const int32 NumRuns = NumRunsGPU.GetValue();
 	checkfAlways(NumRuns <= NewFragments.Num(), "Need to decrease MinAverageVoxelsPer64Leaf: %d runs, but expected max %d", NumRuns, int32(NewFragments.Num()));
 
-	// Note: these copies & allocs could be avoided if we computed the exact number of runs first
-
 	Fragments.Free();
+
+	// Note: these copies & allocs could be avoided if we computed the exact number of runs first
+	
 	Fragments = TGpuArray<uint64>("Fragments", NumRuns);
 	FMemory::CudaMemcpy(Fragments.GetData(), NewFragments.GetData(), NumRuns * sizeof(uint64), cudaMemcpyDeviceToDevice);
 	NewFragments.Free();
@@ -526,7 +516,7 @@ std::shared_ptr<FCpuDag> DAGCompression::CreateSubDAG(TGpuArray<uint64> InFragme
 
 	{
 		SCOPE_TIME(SortFragmentsTime);
-		Fragments = SortFragmentsAndRemoveDuplicates(std::move(InFragments));
+		Fragments = SortFragmentsAndRemoveDuplicates(InFragments, SUBDAG_LEVELS);
 	}
 		
 #if ENABLE_COLORS

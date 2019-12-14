@@ -373,6 +373,11 @@ struct TFixedArray
 		return Index;
 	}
 
+	HOST_DEVICE void SetNumInternal(TSize NewNum)
+	{
+		ArraySize = NewNum;
+	}
+
 protected:
 	TElementType* RESTRICT ArrayData = nullptr;
 	TSize ArraySize = 0;

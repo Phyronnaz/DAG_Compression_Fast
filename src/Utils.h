@@ -265,3 +265,12 @@ private:
 
 #define DECLARE_TIME(Name) FTimeCounter Name{ #Name }
 #define SCOPE_TIME(Time) FScopedTime __ScopedTime ## __LINE__ (Time)
+
+inline uint64 operator "" _G(uint64 Value)
+{
+	return Value * (uint64(1) << 30);
+}
+inline uint64 operator "" _M(uint64 Value)
+{
+	return Value * (uint64(1) << 20);
+}

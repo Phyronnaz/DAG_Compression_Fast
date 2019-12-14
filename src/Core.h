@@ -2,13 +2,13 @@
 
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
 
-#define ENABLE_CHECKS 0
+#define ENABLE_CHECKS 1
 #define DEBUG_GPU_ARRAYS 0
 
 #define ENABLE_COLORS 0
 #define TOP_LEVEL MAX(LEVELS - 8, 0)
 
-#define LEVELS 17
+#define LEVELS 15
 #define SUBDAG_LEVELS 12
 #define SUBDAG_MAX_NUM_FRAGMENTS (150 * 1024 * 1024)
 
@@ -165,7 +165,11 @@ using uint64 = std::uint64_t;
 #define FLATTEN
 #endif
 
+#ifdef _MSC_VER
+#define USE_POPC_INTRINSICS 0
+#else
 #define USE_POPC_INTRINSICS 1
+#endif
 
 #define HOST           __host__ inline FORCEINLINE FLATTEN
 #define HOST_RECURSIVE __host__ inline

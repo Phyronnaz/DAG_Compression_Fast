@@ -45,7 +45,7 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 	{
 		const double Start = Utils::Seconds();
 
-		const uint64 BlockSize = 1 << 20;
+		const uint64 BlockSize = 32000_M; // Skip block copy
 		const uint64 NumBlocks = Size / BlockSize;
 		for (uint64 BlockIndex = 0; BlockIndex < NumBlocks; BlockIndex++)
 		{
@@ -110,7 +110,7 @@ inline auto AllocCPU(void*& Ptr, uint64 Size)
 {
 	PROFILE_FUNCTION_TRACY();
 	CUDA_SYNCHRONIZE_STREAM();
-#if 0
+#if 1
 	const auto Result = cudaMallocHost(&Ptr, Size);
 #else
 	Ptr = std::malloc(Size);
@@ -125,7 +125,7 @@ inline void FreeCPU(void* Ptr)
 	PROFILE_FUNCTION_TRACY();
 	TracyFree(Ptr);
 	CUDA_SYNCHRONIZE_STREAM();
-#if 0
+#if 1
 	cudaFreeHost(Ptr);
 #else
 	std::free(Ptr);

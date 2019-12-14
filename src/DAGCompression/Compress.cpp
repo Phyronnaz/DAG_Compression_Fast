@@ -58,7 +58,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 				FVoxelizer Voxelizer(1 << 20, Size, Scene);
 				auto OpenGlFragments = Voxelizer.GenerateFragments(SceneAABB);
 				auto GpuFragments = OpenGlFragments.Clone();
-				GpuFragments = SortFragmentsAndRemoveDuplicates(std::move(GpuFragments));
+				GpuFragments = SortFragmentsAndRemoveDuplicates(std::move(GpuFragments), LEVELS - VOXELIZER_LEVELS);
 				Fragments = GpuFragments.CreateCPU();
 				GpuFragments.Free();
 			}
@@ -249,6 +249,258 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	return FinalDag;
 }
 
+FFinalDag DAGCompression::Compress_SingleThreadedBig(const FScene& Scene, const FAABB& SceneAABB)
+{
+	DECLARE_TIME(TotalTime);
+	DECLARE_TIME(IsEmptyTime);
+	DECLARE_TIME(CreateDagsTime);
+	DECLARE_TIME(GenerateFragmentsTime);
+	DECLARE_TIME(AddParentToFragmentsTime);
+	DECLARE_TIME(CreateSubDagTime);
+	DECLARE_TIME(SortFragmentsTime);
+	DECLARE_TIME(WaitingForSubDagThreadTime);
+	DECLARE_TIME(MergeTime);
+	DECLARE_TIME(CreateFinalDagTime);
+
+	uint64 TotalFragments = 0;
+	uint64 EmptySubDags = 0;
+
+	FFinalDag FinalDag;
+	{
+		SCOPE_TIME(TotalTime);
+
+		MARK("Start");
+		cudaProfilerStart();
+		NAME_THREAD("Main");
+		
+		TCpuArray<bool> IsEmpty;
+		{
+			PROFILE_SCOPE("IsEmpty");
+			SCOPE_TIME(IsEmptyTime);
+			
+			const int32 Size = 1u << (LEVELS - VOXELIZER_LEVELS);
+			TCpuArray<uint64> Fragments;
+			{
+				FVoxelizer Voxelizer(1 << 20, Size, Scene);
+				auto OpenGlFragments = Voxelizer.GenerateFragments(SceneAABB);
+				auto GpuFragments = OpenGlFragments.Clone();
+				GpuFragments = SortFragmentsAndRemoveDuplicates(std::move(GpuFragments), LEVELS - VOXELIZER_LEVELS);
+				Fragments = GpuFragments.CreateCPU();
+				GpuFragments.Free();
+			}
+			IsEmpty = { "IsEmpty", Size * Size * Size };
+			IsEmpty.MemSet(true);
+			for (uint64 Fragment : Fragments)
+			{
+				const uint64 MortonCode = Fragment & ((uint64(1) << 40) - 1); // Remove colors
+				IsEmpty[MortonCode] = false;
+#if 1
+				const uint3 Position = Utils::MortonDecode64<uint3>(MortonCode);
+				// Add neighbors to avoid false positives
+				for (int32 X = -1; X < 2; X++)
+				{
+					for (int32 Y = -1; Y < 2; Y++)
+					{
+						for (int32 Z = -1; Z < 2; Z++)
+						{
+							const int3 P = make_int3(Position) + make_int3(X, Y, Z);
+							if (make_int3(0) <= P && P < make_int3(Size))
+							{
+								IsEmpty[Utils::MortonEncode64(P.x, P.y, P.z)] = false;
+							}
+						}
+					}
+				}
+#endif
+			}
+		}
+		
+		FCpuDag MergedDag;
+		{
+			PROFILE_SCOPE("Create Dags");
+			SCOPE_TIME(CreateDagsTime);
+
+			FVoxelizer Voxelizer(VOXELIZER_MAX_NUM_FRAGMENTS, 1u << VOXELIZER_LEVELS, Scene);
+
+			FThreadPool AddParentToFragmentsPool(1, "AddParentToFragments");
+			FThreadPool CopyLeavesToCpuPool(1, "CopyLeavesToCpu");
+			
+			TGpuArray<uint64> Fragments;
+			uint64 FragmentsTop = 0;
+
+			std::vector<TCpuArray<uint64>> CpuLeavesArray;
+			uint64 CpuLeavesArrayProcessedTop = 0;
+			std::atomic<uint64> CpuLeavesArrayNum;
+			std::atomic<uint64> NumCpuLeaves;
+
+			CpuLeavesArray.reserve(1u << (LEVELS - VOXELIZER_LEVELS));
+			CpuLeavesArrayNum.store(0);
+			NumCpuLeaves.store(0);
+
+			std::unique_ptr<std::function<void()>> AddPendingFragments;
+			
+			const auto SubDagAABBs = GetAABBs(SceneAABB, LEVELS - VOXELIZER_LEVELS);
+			for (uint32 SubDagIndex = 0; SubDagIndex < SubDagAABBs.size(); ++SubDagIndex)
+			{
+				PROFILE_SCOPE("Sub Dag %d", SubDagIndex);
+				if ((SubDagIndex + 1) % 100 == 0) LOG("Sub Dag %u/%u", SubDagIndex + 1, uint32(SubDagAABBs.size()));
+				
+				const auto SubDagAABB = SubDagAABBs[SubDagIndex];
+
+				if (!Fragments.IsValid())
+				{
+					Fragments = { "Fragments", 3_G / sizeof(uint64) };
+				}
+				
+				if (AddPendingFragments)
+				{
+					(*AddPendingFragments)();
+					AddPendingFragments.reset();
+				}
+
+				if (IsEmpty[SubDagIndex] && !ENABLE_CHECKS) continue;
+
+				bool NeedToProcessFragments = false;
+				{
+					TGpuArray<uint64> VoxelizerFragments;
+					{
+						SCOPE_TIME(GenerateFragmentsTime);
+						VoxelizerFragments = Voxelizer.GenerateFragments(SubDagAABB);
+					}
+
+					{
+						SCOPE_TIME(AddParentToFragmentsTime);
+						AddParentToFragmentsPool.WaitForCompletion();
+						Voxelizer.SwapBuffers();
+					}
+
+					if (VoxelizerFragments.Num() > 0)
+					{
+						check(!IsEmpty[SubDagIndex]);
+
+						const auto AddFragments = [&FragmentsTop, &TotalFragments, &Fragments, &AddParentToFragmentsPool, VoxelizerFragments, SubDagIndex]()
+						{
+							const uint64 Offset = FragmentsTop;
+							FragmentsTop += VoxelizerFragments.Num();
+							TotalFragments += VoxelizerFragments.Num();
+							check(FragmentsTop <= Fragments.Num());
+
+							AddParentToFragmentsPool.Enqueue([&Fragments, Offset, VoxelizerFragments, SubDagIndex]()
+								{
+									TGpuArray<uint64> CudaFragments(Fragments.GetData() + Offset, VoxelizerFragments.Num());
+									AddParentToFragments(VoxelizerFragments, CudaFragments, SubDagIndex, VOXELIZER_LEVELS);
+								});
+						};
+
+						if (FragmentsTop + VoxelizerFragments.Num() <= Fragments.Num())
+						{
+							AddFragments();
+						}
+						else
+						{
+							AddPendingFragments = std::make_unique<std::function<void()>>(AddFragments);
+							NeedToProcessFragments = true;
+						}
+					}
+					else
+					{
+						EmptySubDags++;
+					}
+				}
+				if (NeedToProcessFragments)
+				{
+					{
+						CopyLeavesToCpuPool.WaitForCompletion();
+						Fragments.SetNumInternal(FragmentsTop);
+						auto SortedFragments = SortFragmentsAndRemoveDuplicates(std::move(Fragments), LEVELS);
+						auto Leaves = ExtractLeavesAndShiftReduceFragments(SortedFragments);
+						LOG("%" PRIu64 " Fragments, %" PRIu64 " ReducedFragments, %.2f%%", FragmentsTop, SortedFragments.Num(), double(SortedFragments.Num()) / double(FragmentsTop) * 100);
+						FragmentsTop = 0;
+						SortedFragments.Free();
+						CopyLeavesToCpuPool.Enqueue([ConstLeaves = Leaves, &CpuLeavesArray, &CpuLeavesArrayNum, &NumCpuLeaves]()
+						{
+							auto Leaves = ConstLeaves;
+							auto LeavesCpu = Leaves.CreateCPU();
+							CpuLeavesArray.push_back(LeavesCpu);
+							CpuLeavesArrayNum.fetch_add(1);
+							NumCpuLeaves.fetch_add(LeavesCpu.Num());
+							Leaves.Free();
+						});
+					}
+					{
+						const uint64 NumCpuLeavesLoaded = NumCpuLeaves.load();
+						const uint64 CpuLeavesArrayNumLoaded = CpuLeavesArrayNum.load();
+						if (NumCpuLeavesLoaded > 2_G / sizeof(uint64))
+						{
+							auto Leaves = TGpuArray<uint64>("Leaves", NumCpuLeavesLoaded);
+
+							{
+								PROFILE_SCOPE_TRACY("Copy Leaves to GPU");
+								uint64 Offset = 0;
+								for (uint64 Index = CpuLeavesArrayProcessedTop; Index < CpuLeavesArrayNumLoaded; Index++)
+								{
+									auto& CpuLeaves = CpuLeavesArray[Index];
+									FMemory::CudaMemcpy(&Leaves[Offset], CpuLeaves.GetData(), CpuLeaves.SizeInBytes(), cudaMemcpyHostToDevice);
+									Offset += CpuLeaves.Num();
+									CpuLeaves.Free();
+								}
+								checkEqual(Offset, Leaves.Num());
+
+								NumCpuLeaves.fetch_sub(NumCpuLeavesLoaded);
+								CpuLeavesArrayProcessedTop = CpuLeavesArrayNumLoaded;
+							}
+
+							TGpuArray<uint32> FragmentIndicesToChildrenIndices;
+							SortLeaves(Leaves, FragmentIndicesToChildrenIndices);
+							MergedDag.Leaves = Leaves.CreateCPU();
+
+							Leaves.Free();
+							FragmentIndicesToChildrenIndices.Free();
+						}
+					}
+				}
+			}
+			AddParentToFragmentsPool.Destroy();
+			IsEmpty.Free();
+		}
+		
+		{
+			SCOPE_TIME(CreateFinalDagTime);
+			FinalDag = DAGCompression::CreateFinalDAG(std::move(MergedDag));
+			CUDA_SYNCHRONIZE_STREAM();
+		}
+		
+		MARK("Done");
+		cudaProfilerStop();
+	}
+	
+	LOG("");
+	LOG("############################################################");;
+	TotalTime.Print();
+	IsEmptyTime.Print();
+	CreateDagsTime.Print();
+	GenerateFragmentsTime.Print();
+	AddParentToFragmentsTime.Print();
+	CreateSubDagTime.Print();
+	SortFragmentsTime.Print();
+	WaitingForSubDagThreadTime.Print();
+	MergeTime.Print();
+	CreateFinalDagTime.Print();
+	LOG("############################################################");
+	LOG("Empty Sub Dags still processed: %" PRIu64, EmptySubDags);
+	LOG("############################################################");
+	LOG("Total Fragments: %" PRIu64, TotalFragments);
+	LOG("Throughput: %f BV/s", double(TotalFragments) / TotalTime.Time / 1.e9);
+	LOG("############################################################");
+	LOG("");
+
+	LOG("Peak CPU memory usage: %f MB", Utils::ToMB(FMemory::GetCpuMaxAllocatedMemory()));
+	LOG("Peak GPU memory usage: %f MB", Utils::ToMB(FMemory::GetGpuMaxAllocatedMemory()));
+
+	return FinalDag;
+}
+
+#if 0
 template<uint32 Prefetch, typename T1, typename T2>
 inline auto GetResultLambda_Prefetch(T1& Thread, T2 MaxSize)
 {
@@ -271,7 +523,6 @@ inline auto GetResultLambda_Prefetch(T1& Thread, T2 MaxSize)
 	};
 }
 
-#if 0
 FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAABB& SceneAABB)
 {
 	cudaProfilerStart();
@@ -319,7 +570,7 @@ FFinalDag DAGCompression::Compress_MultiThreaded(const FScene& Scene, const FAAB
 		const auto SortFragmentsThreadOutput = [](uint32 Index, FFragments Fragments)
 		{
 			if (Fragments.Num() == 0) return Fragments;
-			return SortFragmentsAndRemoveDuplicates(std::move(Fragments));
+			return SortFragmentsAndRemoveDuplicates(std::move(Fragments), SUBDAG_LEVELS);
 		};
 		TIndexedThread<FFragments, FFragments> SortFragmentsThread(
 			"1 - SortFragmentsThread",
