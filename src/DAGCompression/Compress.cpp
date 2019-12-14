@@ -239,7 +239,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 	LOG("Empty Sub Dags still processed: %" PRIu64, EmptySubDags);
 	LOG("############################################################");
 	LOG("Total Fragments: %" PRIu64, TotalFragments);
-	LOG("Throughput: %f BV/s", TotalFragments / TotalTime.Time / 1.e9);
+	LOG("Throughput: %f BV/s", double(TotalFragments) / TotalTime.Time / 1.e9);
 	LOG("############################################################");
 	LOG("");
 

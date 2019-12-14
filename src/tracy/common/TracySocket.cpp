@@ -449,7 +449,7 @@ IpAddress::~IpAddress()
 
 void IpAddress::Set( const struct sockaddr& addr )
 {
-#if __MINGW32__
+#ifdef __MINGW32__
     auto ai = (struct sockaddr_in*)&addr;
 #else
     auto ai = (const struct sockaddr_in*)&addr;

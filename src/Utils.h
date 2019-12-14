@@ -17,7 +17,7 @@ namespace Utils
 		return __popc(A);
 #else
 #if USE_POPC_INTRINSICS
-		return __builtin_popcount(a);
+		return __builtin_popcount(A);
 #else
 		// Source: http://graphics.stanford.edu/~seander/bithacks.html
 		A = A - ((A >> 1) & 0x55555555);

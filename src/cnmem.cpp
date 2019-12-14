@@ -914,7 +914,7 @@ cnmemStatus_t Manager::stealBlockUnsafe(void *&data, std::size_t &dataSize, ::si
 
     // We have got a node from a children. We need to update our "used" list before we can do 
     // anything with it.
-    Block *curr = mUsedBlocks, *prev = NULL;
+    Block *curr = mUsedBlocks, *prev = NULL; (void)prev;
     for( ; curr ; curr = curr->getNext() ) { 
         if( curr->getData() <= data && data < curr->getData()+curr->getSize() ) {
             break;
@@ -938,7 +938,7 @@ cnmemStatus_t Manager::stealBlockUnsafe(void *&data, std::size_t &dataSize, ::si
     std::size_t sizeAfter = (curr->getSize() - sizeBefore - dataSize);
 
     // The resulting block.
-    Block *result = curr;
+    Block *result = curr; (void)result;
     
     // If we have no space between curr->getData and block->getData.
     if( sizeBefore == 0 ) {

@@ -98,9 +98,9 @@ public:
     static tracy_force_inline int64_t GetTime()
     {
 #ifdef TRACY_HW_TIMER
-#  if TARGET_OS_IOS == 1
+#  if 0 //TARGET_OS_IOS == 1
         return mach_absolute_time();
-#  elif __ARM_ARCH >= 6
+#  elif 0 // __ARM_ARCH >= 6
 #    ifdef CLOCK_MONOTONIC_RAW
         struct timespec ts;
         clock_gettime( CLOCK_MONOTONIC_RAW, &ts );

@@ -11,6 +11,14 @@
 
 // Define TRACY_ENABLE to enable profiler.
 
+#ifndef _MSC_VER
+#pragma GCC diagnostic ignored "-Wundef"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wenum-compare"
+#endif
+
 #include "common/TracySystem.cpp"
 
 #ifdef TRACY_ENABLE

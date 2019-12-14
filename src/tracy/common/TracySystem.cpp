@@ -1,5 +1,7 @@
+#ifdef _MSC_VER
 #define _CRT_SECURE_NO_WARNINGS
 #pragma warning ( disable: 4099 4456 4505 )
+#endif
 
 #if defined _MSC_VER || defined __CYGWIN__ || defined _WIN32
 # ifndef WIN32_LEAN_AND_MEAN

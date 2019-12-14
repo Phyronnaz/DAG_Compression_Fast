@@ -74,15 +74,15 @@ void FMemory::CudaMemcpyImpl(uint8* Dst, const uint8* Src, uint64 Size, cudaMemc
 	}
 	else if (MemcpyKind == cudaMemcpyDeviceToHost)
 	{
-		PROFILE_SCOPE_TRACY("Memcpy DtH %fMB", Size / double(1u << 20));
+		PROFILE_SCOPE_TRACY("Memcpy DtH %fMB", double(Size) / double(1u << 20));
 		const double Time = BlockCopy();
-		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / Time);
+        ZONE_METADATA("%fGB/s", double( Size) / double(1u << 30) / Time);
 	}
 	else if (MemcpyKind == cudaMemcpyHostToDevice)
 	{
-		PROFILE_SCOPE_TRACY("Memcpy HtD %fMB", Size / double(1u << 20));
+		PROFILE_SCOPE_TRACY("Memcpy HtD %fMB", double(Size) / double(1u << 20));
 		const double Time = BlockCopy();
-		ZONE_METADATA("%fGB/s", Size / double(1u << 30) / Time);
+		ZONE_METADATA("%fGB/s", double(Size) / double(1u << 30) / Time);
 	}
 }
 

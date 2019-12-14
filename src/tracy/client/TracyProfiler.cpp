@@ -69,7 +69,7 @@
 #  endif
 #endif
 
-#if defined TRACY_HW_TIMER && __ARM_ARCH >= 6 && !defined TARGET_OS_IOS
+#if 0 //defined TRACY_HW_TIMER && __ARM_ARCH >= 6 && !defined TARGET_OS_IOS
 #  include <signal.h>
 #  include <setjmp.h>
 #endif
@@ -2336,7 +2336,7 @@ void Profiler::HandleDisconnect()
 void Profiler::CalibrateTimer()
 {
 #ifdef TRACY_HW_TIMER
-#  if !defined TARGET_OS_IOS && __ARM_ARCH >= 6
+#  if 0 //!defined TARGET_OS_IOS && __ARM_ARCH >= 6
     m_timerMul = 1.;
 #  else
     std::atomic_signal_fence( std::memory_order_acq_rel );

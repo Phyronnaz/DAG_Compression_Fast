@@ -165,6 +165,8 @@ using uint64 = std::uint64_t;
 #define FLATTEN
 #endif
 
+#define USE_POPC_INTRINSICS 1
+
 #define HOST           __host__ inline FORCEINLINE FLATTEN
 #define HOST_RECURSIVE __host__ inline
 
@@ -244,10 +246,17 @@ HOST_DEVICE T Cast(U Value)
 	return static_cast<T>(Value);
 }
 
+#ifdef _MSC_VER
 #pragma warning ( push )
 #pragma warning ( disable: 4099 4456 4505 )
 #include "tracy/Tracy.hpp"
 #pragma warning ( pop )
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wundef"
+#include "tracy/Tracy.hpp"
+#pragma GCC diagnostic pop
+#endif
 
 #include "nvToolsExt.h"
 #include "nvToolsExtCuda.h"

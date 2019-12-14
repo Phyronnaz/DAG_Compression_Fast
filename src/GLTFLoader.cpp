@@ -3,6 +3,11 @@
 #include <fstream>
 #include <iostream>
 
+#ifndef _MSC_VER
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wtype-limits"
+#endif
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <glm/gtc/type_ptr.hpp>
 #include <stb/stb_image.h>
