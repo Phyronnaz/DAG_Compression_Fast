@@ -68,7 +68,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 			{
 				const uint64 MortonCode = Fragment & ((uint64(1) << 40) - 1); // Remove colors
 				IsEmpty[MortonCode] = false;
-#if 1
+#if 0
 				const uint3 Position = Utils::MortonDecode64<uint3>(MortonCode);
 				// Add neighbors to avoid false positives
 				for (int32 X = -1; X < 2; X++)
@@ -94,7 +94,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 			SCOPE_TIME(CreateDagsTime);
 
 			FThreadPool AddParentToFragmentsPool(1, "AddParentToFragments");
-			FThreadPool CreateCpuDagPool(4, "CreateCpuDag");
+			FThreadPool CreateCpuDagPool(6, "CreateCpuDag");
 			FVoxelizer Voxelizer(VOXELIZER_MAX_NUM_FRAGMENTS, 1u << VOXELIZER_LEVELS, Scene);
 			for (uint32 SubDagIndex = 0; SubDagIndex < AABBs.size(); ++SubDagIndex)
 			{
@@ -168,6 +168,7 @@ FFinalDag DAGCompression::Compress_SingleThreaded(const FScene& Scene, const FAA
 
 				{
 					SCOPE_TIME(CreateSubDagTime);
+//                    CreateCpuDagPool.WaitForCompletion();
 					auto CpuDag = CreateSubDAG(std::move(Fragments), SortFragmentsTime, CreateCpuDagPool);
 					CUDA_SYNCHRONIZE_STREAM();
 					DagsToMerge.push_back(CpuDag);

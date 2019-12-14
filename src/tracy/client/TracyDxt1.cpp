@@ -13,6 +13,7 @@
 #  define __SSE4_1__
 #endif
 
+#undef __AVX2__ // does silly things on linux
 #if defined __SSE4_1__ || defined __AVX2__
 #  ifdef _MSC_VER
 #    include <intrin.h>

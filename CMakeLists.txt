@@ -4,6 +4,14 @@ project(DAG_Compression_Fast LANGUAGES CUDA CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 14)
 
+set(CMAKE_CXX_FLAGS "-Wall -Wextra -Wconversion -Wundef -DTRACY_ENABLE")
+set(CMAKE_CXX_FLAGS_DEBUG "-march=native -g")
+set(CMAKE_CXX_FLAGS_RELEASE "-march=native -g -O3 -ffast-math")
+
+# Ignore some warnings that add a lot of spam and aren't that critical:
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-variable -Wno-unused-parameter")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-parentheses")
+
 find_package(CUDA REQUIRED)
 find_package(GLEW REQUIRED)
 
@@ -12,7 +20,7 @@ include_directories("${CUDA_INCLUDE_DIRS}")
 set(CMAKE_CUDA_HOST_COMPILER gcc-8)
 
 set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS}; -gencode arch=compute_61,code=sm_61)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr --extended-lambda")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr --extended-lambda -DTRACY_ENABLE -g")
 
 include_directories(src)
 
@@ -555,6 +563,7 @@ add_executable(DAG_Compression_Fast
         src/DAGCompression/DAGCompression.h
         src/DAGTracer.cu
         src/DAGTracer.h
+        src/GpuPrimitives.h
         src/GLTFLoader.cpp
         src/GLTFLoader.h
         src/Memory.cpp

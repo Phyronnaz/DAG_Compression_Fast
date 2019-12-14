@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include "Utils.h"
+#include "Array.h"
 #include "device_atomic_functions.h"
 
 #pragma push_macro("check")
@@ -80,6 +81,7 @@ inline void Foreach(
 	F Lambda)
 {
 	CUDA_CHECK_LAST_ERROR();
+	PROFILE_FUNCTION_TRACY();
 	SCOPED_BANDWIDTH_TRACY(In.Num());
 	
 	thrust::for_each(
